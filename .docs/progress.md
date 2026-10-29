@@ -1,5 +1,50 @@
 # Diário de progresso
 
+## 2026-10-29 16:35:20 -03:00 — Infraestrutura local com Docker Compose
+
+**O que foi feito:**
+
+- Criado `Dockerfile` multi-stage para compilar e executar a aplicação NestJS com Bun 1.4.4, incluindo health check HTTP.
+- Criado `.dockerignore` para excluir dependências, artefatos de build, Git, documentação e arquivos de ambiente da imagem.
+- Criado `.env.example` com configurações locais sem segredos reais.
+- Criado `docker-compose.yml` com PostgreSQL 16, LocalStack 3.8.1 limitado a SQS e o serviço da aplicação NestJS.
+- Configurados health checks para PostgreSQL, LocalStack e aplicação, dependências condicionadas à saúde e volume persistente para os dados do PostgreSQL.
+- Criado `docker/localstack/init/ready.d/10-create-sqs.sh` para criar `wager-transactions-dlq.fifo` e `wager-transactions.fifo`, ambas FIFO, associando a fila principal à DLQ com `maxReceiveCount=5`.
+- Nenhuma entidade, carteira, transação financeira, consumer, inbox, outbox ou regra de negócio foi implementada.
+
+**Por que foi feito:**
+
+Disponibilizar somente o ambiente local reproduzível exigido pelo desafio, permitindo iniciar e encerrar PostgreSQL, LocalStack/SQS e a aplicação sem antecipar a implementação do domínio.
+
+**Como foi feito:**
+
+O Compose usa imagens oficiais fixadas por tag, injeta configurações por variáveis com defaults locais e monta o script de inicialização do LocalStack. A aplicação recebe `DATABASE_URL`, endpoint SQS e nomes das filas, mas não tenta acessá-los porque essas dependências ainda não existem no código.
+
+**Validação e testes:**
+
+- `docker compose config` e `docker compose config --quiet` → configuração válida.
+- `docker compose up -d --build` → concluído; imagens PostgreSQL, LocalStack e Bun baixadas, imagem da aplicação construída e três containers iniciados.
+- Primeira validação encontrou apenas a DLQ; os logs mostraram erro de parsing do argumento `--attributes` na criação da fila principal.
+- Corrigido o script para enviar os atributos da fila principal como JSON completo.
+- `docker compose up -d --force-recreate localstack` → concluído após a correção.
+- `docker compose ps` → PostgreSQL, LocalStack e aplicação `healthy`.
+- `awslocal sqs list-queues` → listou `wager-transactions-dlq.fifo` e `wager-transactions.fifo`.
+- `awslocal sqs get-queue-attributes` → confirmou `FifoQueue=true` e `RedrivePolicy` apontando para a DLQ com `maxReceiveCount=5`.
+- `curl.exe http://127.0.0.1:3000/health/live` → HTTP `200`, corpo `{ "status":"ok" }`.
+- `docker compose down` → concluído; containers e rede removidos, volumes `backend-challenge_postgres-data` e `backend-challenge_localstack-data` preservados.
+- `bun run typecheck` → aprovado.
+- `bun run build` → aprovado.
+- `bun test` → aprovado: 1 teste, 0 falhas.
+- `git diff --check` → sem erros.
+
+**Resultado:**
+
+O ambiente local foi iniciado, validado e encerrado com sucesso. A aplicação mantém apenas o endpoint de liveness existente; nenhum componente do domínio foi iniciado.
+
+**Próximos passos:**
+
+Decidir e documentar ORM, migrations, schema, concorrência e idempotência antes de configurar persistência ou implementar o domínio.
+
 ## 2026-10-29 16:16:46 -03:00 — Estrutura inicial NestJS com Bun
 
 **O que foi feito:**
