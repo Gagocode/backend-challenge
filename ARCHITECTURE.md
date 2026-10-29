@@ -6,8 +6,8 @@
 |---|---|
 | Requisitos do desafio | Definidos no [README.md](README.md) e copiados fielmente em [.docs/challenge.md](.docs/challenge.md). |
 | Propostas arquiteturais | Hipóteses abaixo, ainda não aprovadas nem implementadas. |
-| Decisões aprovadas | Apenas a preservação do README como fonte de verdade e esta separação documental. |
-| Funcionalidades implementadas e validadas | Nenhuma. |
+| Decisões aprovadas | Preservação do README como fonte de verdade, separação documental e ADR-003 sobre TypeORM, migrações explícitas e readiness. |
+| Funcionalidades implementadas e validadas | Bootstrap NestJS, conexão TypeORM com PostgreSQL, readiness separado e mecanismo de migrações reversíveis; domínio financeiro ainda não implementado. |
 
 ## Visão geral
 
@@ -66,6 +66,13 @@ API e SQS devem reutilizar o mesmo caso de uso, como exige o desafio; a semânti
 
 Autenticação é opcional e não pontua. Se adotada, exige IdP externo; health fica aberto e SQS é canal interno confiável, sem dispensar validações de domínio. A decisão está pendente.
 
+## Decisões aprovadas na etapa de persistência
+
+- TypeORM com `@nestjs/typeorm` e `pg` foi escolhido dentro das alternativas permitidas.
+- A conexão é configurada por `DATABASE_URL`; `synchronize` e `migrationsRun` permanecem desabilitados.
+- O `DataSource` compartilhado oferece os comandos Bun `migration:create`, `migration:run` e `migration:revert`.
+- O endpoint de liveness permanece independente do banco; `GET /health/ready` consulta PostgreSQL com `SELECT 1`.
+
 ## Decisões pendentes
 
 - ORM, schema, migrations e mapeamento de Money.
@@ -79,4 +86,6 @@ Autenticação é opcional e não pontua. Se adotada, exige IdP externo; health 
 
 ## Limitações conhecidas
 
-Não há aplicação, banco, filas, migrations, infraestrutura, endpoints, autenticação, testes ou validações implementadas.
+O schema atual possui somente a tabela técnica temporária `migration_probe` para validar o mecanismo de migrações. Não há entidades financeiras, wallets, ledger, inbox, outbox, consumers ou regras de apostas.
+
+O comando de migração foi validado no container da aplicação, usando a rede interna do Compose. Neste ambiente, a porta IPv4 `5432` do host também é ocupada por um PostgreSQL nativo, portanto o acesso do CLI executado no host pode atingir outra instância; isso não afeta a conexão da aplicação com o serviço `postgres` do Compose.

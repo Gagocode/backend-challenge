@@ -26,6 +26,17 @@ Status possíveis: **proposta**, **aprovada** e **substituída**. O [README](../
 - **Justificativa:** evita que hipótese seja apresentada como fato.
 - **Consequências e trade-offs:** lacunas deliberadas devem ser resolvidas antes da implementação.
 
+## ADR-003 — TypeORM, migrações explícitas e readiness
+
+- **ID:** ADR-003
+- **Status:** aprovada
+- **Data:** 2026-10-29
+- **Contexto e problema:** A aplicação precisa conectar-se ao PostgreSQL sem permitir que o ORM altere o schema implicitamente, e o mecanismo de evolução do banco precisa ser executável e reversível com Bun.
+- **Alternativas consideradas:** Prisma (fora das restrições); `synchronize: true`; TypeORM com CLI externa; TypeORM com `DataSource` compartilhado e scripts Bun; readiness misturado ao liveness.
+- **Decisão:** usar TypeORM com `@nestjs/typeorm` e driver `pg`, carregar a conexão por `DATABASE_URL`, manter `synchronize: false` e `migrationsRun: false`, e executar migrações por um `DataSource` compartilhado através dos comandos `migration:create`, `migration:run` e `migration:revert`. O liveness continuará sem dependências; `GET /health/ready` fará um `SELECT 1` no PostgreSQL e responderá `503` quando a dependência estiver indisponível.
+- **Justificativa:** atende à stack permitida, mantém o schema sob controle versionado e permite validar o ciclo de vida sem antecipar entidades financeiras.
+- **Consequências e trade-offs:** o deploy precisa executar `migration:run` explicitamente; falhas de inicialização da conexão encerram a aplicação com erro estruturado; a primeira migração contém somente uma tabela técnica `migration_probe`, que deverá ser removida ou substituída quando o schema de domínio for definido.
+
 ## Decisões pendentes
 
 | ID | Título | Status | Contexto, alternativas e decisão pendente |

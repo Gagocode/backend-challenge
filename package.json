@@ -5,6 +5,9 @@
   "type": "commonjs",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "migration:create": "bun src/database/migration-cli.ts create",
+    "migration:revert": "bun src/database/migration-runner.ts revert",
+    "migration:run": "bun src/database/migration-runner.ts run",
     "start": "bun dist/main.js",
     "start:dev": "bun --watch src/main.ts",
     "test": "bun test",
@@ -13,10 +16,14 @@
   },
   "dependencies": {
     "@nestjs/common": "^11.0.11",
+    "@nestjs/config": "^4.0.2",
     "@nestjs/core": "^11.0.11",
     "@nestjs/platform-express": "^11.0.11",
+    "@nestjs/typeorm": "^11.0.0",
+    "pg": "^8.13.3",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.2"
+    "rxjs": "^7.8.2",
+    "typeorm": "^0.3.22"
   },
   "devDependencies": {
     "@types/bun": "^1.2.5",

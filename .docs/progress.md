@@ -1,5 +1,55 @@
 # Diário de progresso
 
+## 2026-10-29 17:09:09 -03:00 — Persistência TypeORM e migrações reversíveis
+
+**O que foi feito:**
+
+- Adicionadas as dependências `@nestjs/config`, `@nestjs/typeorm`, `typeorm` e `pg`.
+- Configurada a conexão PostgreSQL por `DATABASE_URL`, com `synchronize: false` e `migrationsRun: false`.
+- Integrado o `TypeOrmModule` ao NestJS, com três tentativas de conexão e encerramento estruturado em caso de falha no bootstrap.
+- Criado o `DataSource` compartilhado e os comandos Bun `migration:create`, `migration:run` e `migration:revert`.
+- Criada a migração mínima reversível `CreateMigrationProbe1710000000000`, contendo somente a tabela técnica `migration_probe`.
+- Criado `GET /health/ready`, separado do liveness, verificando PostgreSQL com `SELECT 1` e retornando indisponibilidade quando a consulta falha.
+- Adicionados testes para configuração TypeORM e comportamento de readiness; o teste de liveness existente foi preservado.
+- Atualizados `.env.example`, `decisions.md` e `ARCHITECTURE.md` com a decisão TypeORM, política de migrações, separação liveness/readiness e limitações observadas.
+- Nenhuma entidade financeira, carteira, transação, ledger, inbox, outbox, consumer ou regra de aposta foi implementada.
+
+**Por que foi feito:**
+
+Estabelecer a primeira camada de persistência e um ciclo de migrações controlado e reversível, sem antecipar o schema do domínio financeiro.
+
+**Como foi feito:**
+
+O NestJS inicializa o TypeORM com opções derivadas de `DATABASE_URL`. Os scripts Bun usam o mesmo `DataSource` para aplicar ou desfazer migrações. O readiness consulta a conexão já inicializada, enquanto o liveness continua independente do banco.
+
+**Validação e testes:**
+
+- `bun install` → dependências TypeORM, PostgreSQL e configuração instaladas; lockfile atualizado.
+- Primeira rodada de `bun run typecheck`/`bun run build` encontrou incompatibilidades de CommonJS com `import.meta`/top-level await, uma opção de retry no tipo errado e um estreitamento de tipo ausente; todos foram corrigidos.
+- `bun run typecheck` → aprovado.
+- `bun run build` → aprovado.
+- `bun test` → aprovado: 5 testes, 0 falhas e 9 expectativas.
+- `docker compose up -d --build` → PostgreSQL, LocalStack e aplicação iniciados; todos ficaram `healthy`.
+- `GET /health/live` → HTTP `200`, confirmando liveness independente.
+- `GET /health/ready` → HTTP `200` com PostgreSQL `up`.
+- Primeira tentativa de `bun run migration:run` no host falhou por conflito com outro PostgreSQL nativo na porta IPv4 5432; o problema foi mantido sem apagar volumes.
+- `docker compose exec app bun dist/database/migration-runner.js run` → aplicado com sucesso no PostgreSQL real do Compose.
+- Consulta no PostgreSQL confirmou `migration_probe` e `typeorm_migrations` após o apply.
+- `docker compose exec app bun dist/database/migration-runner.js revert` → revertido com sucesso.
+- Consulta posterior confirmou que `migration_probe` foi removida e que `typeorm_migrations` ficou com zero migrações.
+- `bun run migration:create -- TemporaryValidation` → comando validado; o artefato temporário foi removido após o teste.
+- `docker compose up -d --build app` após as alterações finais → aplicação reconstruída e iniciada com conexão TypeORM.
+- `docker compose down` → concluído; containers e rede removidos, volumes preservados.
+- `git diff --check` → sem erros; apenas avisos informativos de conversão LF/CRLF.
+
+**Resultado:**
+
+TypeORM está integrado, a aplicação inicia com PostgreSQL real, a migração mínima pode ser aplicada e revertida, e liveness/readiness possuem responsabilidades distintas. A limitação do PostgreSQL nativo na porta IPv4 do host foi contornada validando os comandos no container da aplicação, sem remover dados.
+
+**Próximos passos:**
+
+Definir o schema do domínio, o mapeamento de `Money`, constraints e estratégia de concorrência antes de criar entidades financeiras ou novas migrações de negócio.
+
 ## 2026-10-29 16:35:20 -03:00 — Infraestrutura local com Docker Compose
 
 **O que foi feito:**
