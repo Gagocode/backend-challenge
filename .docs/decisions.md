@@ -37,6 +37,17 @@ Status possíveis: **proposta**, **aprovada** e **substituída**. O [README](../
 - **Justificativa:** atende à stack permitida, mantém o schema sob controle versionado e permite validar o ciclo de vida sem antecipar entidades financeiras.
 - **Consequências e trade-offs:** o deploy precisa executar `migration:run` explicitamente; falhas de inicialização da conexão encerram a aplicação com erro estruturado; a primeira migração contém somente uma tabela técnica `migration_probe`, que deverá ser removida ou substituída quando o schema de domínio for definido.
 
+## ADR-004 — Representação exata de Money
+
+- **ID:** ADR-004
+- **Status:** aprovada
+- **Data:** 2026-10-29
+- **Contexto e problema:** Valores monetários não podem depender de `number`, `float`, `double` ou arredondamentos implícitos, pois o objeto será usado nas invariantes financeiras futuras.
+- **Alternativas consideradas:** `number`; strings recalculadas com aritmética decimal manual; biblioteca decimal adicional; `bigint` armazenando centavos.
+- **Decisão:** `Money` será um objeto de valor independente, com `bigint` privado representando centavos e moeda como código ISO-4217 de três letras maiúsculas. Entradas são strings decimais não negativas com no máximo duas casas; a serialização sempre produz duas casas. Operações podem produzir resultados negativos internamente, mas contratos de entrada rejeitam valores negativos.
+- **Justificativa:** `bigint` fornece precisão exata e escala fixa sem dependências externas ou conversões binárias; a validação explícita rejeita notação científica, valores malformados e precisão não suportada.
+- **Consequências e trade-offs:** o valor monetário não pode ser serializado diretamente como `bigint`; `toString` e `toJSON` são os formatos explícitos. A escala está limitada a duas casas nesta etapa, conforme o contrato do desafio.
+
 ## Decisões pendentes
 
 | ID | Título | Status | Contexto, alternativas e decisão pendente |

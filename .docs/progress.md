@@ -1,5 +1,41 @@
 # Diário de progresso
 
+## 2026-10-29 17:40:42 -03:00 — Objeto de valor Money
+
+**O que foi feito:**
+
+- Criado `src/domain/money/money.ts`, independente de NestJS, TypeORM, PostgreSQL e SQS.
+- Implementada representação interna exata com `bigint` em centavos e moeda como código ISO-4217 de três letras maiúsculas.
+- Implementadas factories `from` e `zero`, operações `add`, `subtract` e `negate`, comparações, consultas de sinal e serialização com duas casas decimais.
+- Adicionadas validações para strings vazias, formatos malformados, notação científica, `NaN`, `Infinity`, valores negativos de entrada, mais de duas casas e moedas inválidas.
+- Criados testes unitários para precisão decimal, valores muito grandes, limites, moedas incompatíveis, imutabilidade e todos os formatos inválidos relevantes.
+- Atualizados `.docs/decisions.md` com ADR-004 e `ARCHITECTURE.md` com a decisão de representação monetária.
+- Nenhuma wallet, transação, ledger ou regra de aposta foi implementada.
+
+**Por que foi feito:**
+
+Estabelecer uma base monetária exata e imutável antes da implementação dos agregados e casos de uso financeiros, eliminando dependência de aritmética binária de ponto flutuante.
+
+**Como foi feito:**
+
+Strings de entrada são validadas por expressão explícita e convertidas diretamente para centavos com `BigInt`; nenhuma conversão para `number` ocorre. A serialização recompõe a parte inteira e as duas casas fracionárias. Operações retornam novas instâncias e preservam a moeda.
+
+**Validação e testes:**
+
+- Primeira execução de typecheck/build encontrou uma falha de strictness no grupo capturado da regex; uma guarda explícita foi adicionada.
+- `bun run typecheck` → aprovado.
+- `bun run build` → aprovado.
+- `bun test` → aprovado: 14 testes, 0 falhas e 45 expectativas, incluindo todos os testes existentes.
+- `git diff --check` → sem erros; apenas avisos informativos de conversão LF/CRLF.
+
+**Resultado:**
+
+`Money` está implementado com precisão decimal exata, saída normalizada em duas casas e cobertura unitária abrangente. A infraestrutura existente não foi alterada.
+
+**Próximos passos:**
+
+Definir o modelo e as invariantes da Wallet antes de criar novas operações financeiras ou persistência de entidades de domínio.
+
 ## 2026-10-29 17:09:09 -03:00 — Persistência TypeORM e migrações reversíveis
 
 **O que foi feito:**

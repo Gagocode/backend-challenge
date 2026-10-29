@@ -7,7 +7,7 @@
 | Requisitos do desafio | Definidos no [README.md](README.md) e copiados fielmente em [.docs/challenge.md](.docs/challenge.md). |
 | Propostas arquiteturais | Hipóteses abaixo, ainda não aprovadas nem implementadas. |
 | Decisões aprovadas | Preservação do README como fonte de verdade, separação documental e ADR-003 sobre TypeORM, migrações explícitas e readiness. |
-| Funcionalidades implementadas e validadas | Bootstrap NestJS, conexão TypeORM com PostgreSQL, readiness separado e mecanismo de migrações reversíveis; domínio financeiro ainda não implementado. |
+| Funcionalidades implementadas e validadas | Bootstrap NestJS, conexão TypeORM com PostgreSQL, readiness separado, migrações reversíveis e objeto de valor Money; agregados financeiros ainda não implementados. |
 
 ## Visão geral
 
@@ -29,7 +29,7 @@ O desafio requer um serviço financeiro distribuído para transações de aposta
 | Componente | Responsabilidade | Estado |
 |---|---|---|
 | API HTTP | Wallets, transações, consultas, reconciliação e health checks. | Não implementado |
-| Casos de uso/domínio | Regras, Money, Wallet, transação, ledger e idempotência. | Não implementado |
+| Casos de uso/domínio | Regras, Money, Wallet, transação, ledger e idempotência. | Money implementado e testado; demais componentes não implementados |
 | PostgreSQL | Estado, constraints, índices, inbox e outbox. | Não configurado |
 | Consumidor SQS | Reusar caso de uso, registrar inbox e fazer ack após commit. | Não implementado |
 | Worker de referências | Reprocessar `PENDING_REFERENCE`. | Não implementado |
@@ -73,9 +73,15 @@ Autenticação é opcional e não pontua. Se adotada, exige IdP externo; health 
 - O `DataSource` compartilhado oferece os comandos Bun `migration:create`, `migration:run` e `migration:revert`.
 - O endpoint de liveness permanece independente do banco; `GET /health/ready` consulta PostgreSQL com `SELECT 1`.
 
+## Decisões aprovadas na etapa Money
+
+- `Money` usa `bigint` privado em centavos, sem `number`, `float` ou `double` para representação ou cálculo.
+- Entradas monetárias são strings decimais não negativas com até duas casas; saída é sempre uma string com duas casas.
+- `Money` permanece independente de NestJS, TypeORM, PostgreSQL e SQS.
+
 ## Decisões pendentes
 
-- ORM, schema, migrations e mapeamento de Money.
+- Schema de domínio e mapeamento de Money na persistência.
 - Concorrência por wallet e retry de conflitos.
 - Idempotência, JSON canônico e payload hash.
 - Processamento HTTP síncrono versus assíncrono e status HTTP.
