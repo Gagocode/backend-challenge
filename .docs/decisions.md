@@ -128,3 +128,9 @@ Cada item deverá registrar contexto/problema, alternativas, decisão, justifica
 - **Justificativa:** a entidade representa corretamente a entrega fora de ordem sem cache ou repositório em memória. A referência é identificada pelo `referenceExternalTransactionId`; sua resolução e a prevenção de duas reversões ficam para o caso de uso e constraints persistentes.
 - **Taxonomia de falhas:** `INSUFFICIENT_BALANCE`, `REVERSAL_INSUFFICIENT_BALANCE`, `INVALID_REFERENCE`, `REFERENCE_NOT_FOUND`, `CURRENCY_MISMATCH` e `DUPLICATE_REVERSAL` são códigos estáveis. O código de saldo insuficiente em reversão é distinto do código de aposta sem saldo.
 - **Consequências e trade-offs:** `WIN` pode referenciar uma `BET` da mesma rodada sem exigir igualdade de valor; `REFUND` exige `BET` processada e `ROLLBACK` aceita `BET`, `WIN` ou `REFUND` processadas, sempre com o mesmo valor. `OPENING` existe apenas para uso interno e não deve ser aceito por API/fila.
+## ADR-011 — Contratos HTTP e reconciliação
+
+- **Status:** aprovada — 2026-10-30.
+- **Decisão:** controllers usam DTOs HTTP estritos e serializadores próprios; regras financeiras permanecem nos casos de uso. A paginação do ledger é cursor-based por `(createdAt,id)`, e a reconciliação é somente leitura, com divergências logadas.
+- **Justificativa:** evita acoplamento com TypeORM, mantém respostas determinísticas e não mascara inconsistências financeiras.
+- **Trade-offs:** a readiness reporta somente PostgreSQL enquanto o cliente SQS não existe; a integração SQS será adicionada em etapa posterior.

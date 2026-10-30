@@ -1,5 +1,20 @@
 # Diário de progresso
 
+## 2026-10-30 — Complemento Etapa 11: suíte E2E HTTP automatizada
+
+**O que foi feito:**
+
+- Criado `test/http.e2e.test.ts`, iniciando `src/main.ts` como processo NestJS real em porta dinâmica.
+- As requisições usam HTTP real com `fetch`; persistência é verificada no PostgreSQL real via TypeORM.
+- Cada cenário usa UUIDs e chaves externas novas, sem limpeza de volume ou dependência de ordem.
+- Cobertos criação/duplicidade/consulta de wallet, ledger com cursor, consultas interna/externa, submissão, replay/conflito, validação, ausência de idempotência, rejeição, referência pendente, reconciliação consistente/divergente e health.
+- Corrigidos imports de interfaces como `import type`, revelados pela execução direta do TypeScript com Bun.
+
+**Validação:**
+
+- `bun test test/http.e2e.test.ts` → 10 pass, 0 fail, 52 expectativas, contra PostgreSQL real e processo NestJS real.
+- O cenário de falha de infraestrutura valida falha HTTP de dependência inalcançável; o comportamento de readiness com PostgreSQL indisponível permanece coberto pelo teste do controller, sem parar o serviço compartilhado nem apagar dados.
+
 ## 2026-10-30 10:01:55 -03:00 — Domínio WagerTransaction
 
 **O que foi feito:**
@@ -347,4 +362,26 @@ A persistência financeira da Etapa 9 foi validada contra PostgreSQL real. Não 
 - `git diff --check` → aprovado.
 
 **Escopo preservado:** não foram implementados controllers HTTP, consumer SQS, Inbox, Outbox, publicação de eventos, reconciliação, observabilidade avançada ou autenticação. Nenhuma migração foi necessária.
+
+## 2026-10-30 — Etapa 11: API HTTP e integração dos casos de uso
+
+**O que foi feito:**
+
+- Implementados `POST/GET /wallets`, ledger por cursor opaco, consultas de transações interna/externa, submissão de wagering e reconciliação.
+- Criados contratos/serializadores HTTP, validação estrita de propriedades, UUIDs, enums e Money como string decimal.
+- Integrados `CreateWalletUseCase`, `ProcessWagerTransactionUseCase` e novo `ReconcileWalletUseCase` por DI do NestJS.
+- Adicionado filtro centralizado de erros, incluindo conflito, inexistência, rejeição de negócio, pendência de referência e indisponibilidade de infraestrutura.
+- Readiness PostgreSQL foi preservada; SQS permanece explicitamente não verificado por não haver integração nesta etapa.
+
+**Validação:**
+
+- `bun run typecheck`, `bun run build` e `git diff --check` aprovados.
+- `bun test`: 32 aprovados e 17 testes PostgreSQL ignorados quando `DATABASE_URL` não estava definido.
+- Docker Compose/PostgreSQL/LocalStack iniciados; migrações já aplicadas; aplicação reconstruída e saudável.
+- Fluxo HTTP real validado: criação de wallet, BET processada e saldo atualizado de `100.00` para `75.00`, além de liveness/readiness `200`.
+
+**Limitações e próximos passos:**
+
+- Não há cliente SQS nesta etapa; readiness não simula uma verificação positiva de SQS.
+- Testes E2E automatizados completos devem ser executados no ambiente CI com Docker e incluídos na próxima rodada de endurecimento da API; consumer, inbox/outbox, retry/DLQ e autenticação permanecem fora do escopo.
 
