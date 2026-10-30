@@ -16,6 +16,7 @@ export function createDatabaseOptions(
     synchronize: false,
     migrationsRun: false,
     migrationsTableName: 'typeorm_migrations',
+    entities: [join(__dirname, '../persistence/typeorm/entities/*{.js,.ts}')],
     migrations: [join(__dirname, 'migrations/*{.js,.ts}')],
   };
 }

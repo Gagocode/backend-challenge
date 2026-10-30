@@ -64,6 +64,27 @@ Status possíveis: **proposta**, **aprovada** e **substituída**. O [README](../
 
 Cada item deverá registrar contexto/problema, alternativas, decisão, justificativa, consequências/trade-offs e data antes de receber status **aprovada**.
 
+## ADR-008 — Persistência financeira PostgreSQL
+
+- **ID:** ADR-008
+- **Status:** aprovada
+- **Data:** 2026-10-30
+- **Contexto e problema:** Wallet, transações e ledger precisam ser persistidos com precisão decimal, invariantes reforçadas pelo banco e domínio independente do TypeORM.
+- **Alternativas consideradas:** entidades TypeORM no domínio; valores monetários em `double precision`; tabelas sem constraints e validação somente em aplicação.
+- **Decisão:** usar entidades TypeORM isoladas em `src/persistence`, mappers explícitos e contratos na camada de aplicação. Valores monetários serão `NUMERIC(20,2)` lidos como `string`, convertidos em `Money` pelas factories `rehydrate` dos agregados. A idempotência será única por `(provider_id, idempotency_key)` e a identificação externa por `(provider_id, external_transaction_id)`.
+- **Justificativa:** preserva a exatidão decimal e evita acoplamento do domínio, enquanto constraints, FK, índices e trigger de ledger protegem invariantes mesmo fora da aplicação.
+- **Consequências e trade-offs:** o limite de `NUMERIC(20,2)` é explícito; `OPENING` continua sendo responsabilidade de um caso de uso futuro. A tabela de ledger rejeita `UPDATE`/`DELETE` por trigger e só aceita inserções aritmeticamente válidas.
+
+## ADR-009 — Concorrência por wallet
+
+- **ID:** ADR-009
+- **Status:** aprovada
+- **Data:** 2026-10-30
+- **Contexto e problema:** duas instâncias podem alterar a mesma carteira simultaneamente, e a unidade de concorrência exigida é `walletId`.
+- **Decisão:** os repositórios oferecem leitura com `pessimistic_write`; o caso de uso futuro deve abrir uma transação SQL, bloquear apenas a linha da wallet, aplicar o movimento no agregado e gravar wallet, transação e ledger antes do commit.
+- **Justificativa:** o lock é distribuído pelo PostgreSQL, funciona entre processos e mantém wallets diferentes em paralelo; não há lock global em memória.
+- **Consequências e trade-offs:** o fluxo financeiro completo e retries de deadlock/timeout permanecem fora desta etapa; os chamadores devem usar o método `forUpdate` somente dentro de uma transação ativa.
+
 ## ADR-005 — Transições explícitas de Wallet e ledger
 
 - **ID:** ADR-005
