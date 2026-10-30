@@ -1,5 +1,39 @@
 # Diário de progresso
 
+## 2026-10-30 09:51:37 -03:00 — Domínio Wallet e WalletLedgerEntry
+
+**O que foi feito:**
+
+- Criados `src/domain/wallet/wallet.ts` e `src/domain/wallet/wallet-ledger-entry.ts`.
+- Implementadas factories privadas `Wallet.open`/`rehydrate` e `WalletLedgerEntry.create`/`rehydrate`.
+- Implementadas encapsulação de saldo, versionamento iniciado em `1`, validação de moeda, rejeição de saldo negativo, crédito, débito e retorno explícito do lançamento correspondente.
+- Implementado ledger imutável com direções `DEBIT` e `CREDIT`, validação matemática em `create` e consulta `isBalanced`.
+- Criados testes abrangentes para criação, movimentações, saldo insuficiente, moedas incompatíveis, versionamento, imutabilidade, reidratação e consistência matemática.
+- Atualizados `.docs/decisions.md` com ADR-005 e ADR-006 e `ARCHITECTURE.md` com as decisões do domínio.
+- Nenhuma persistência, repositório, endpoint, SQS, Inbox, Outbox ou `WagerTransaction` foi implementado.
+
+**Decisões relevantes:**
+
+- `debit` e `credit` recebem `{ id, transactionId, money, at? }` e retornam o `WalletLedgerEntry` criado; saldo e ledger são validados juntos no domínio.
+- A atomicidade entre saldo e ledger será responsabilidade da mesma transação SQL futura, sem simulação por estado em memória.
+- A reidratação não recalcula a transição do ledger; datas são copiadas para impedir mutação externa acidental.
+
+**Validação e testes:**
+
+- `bun run typecheck` → aprovado.
+- `bun run build` → aprovado.
+- `bun test` → aprovado: 22 testes, 0 falhas e 76 expectativas.
+- `git diff --check` → aprovado, sem erros.
+
+**Resultado:**
+
+Wallet e WalletLedgerEntry estão implementados e testados, mantendo as invariantes de moeda, não-negatividade, versionamento e consistência do lançamento. A etapa foi encerrada sem iniciar `WagerTransaction`.
+
+**Pendências:**
+
+- Mapear Wallet e ledger para o schema SQL, constraints e repositórios em etapa futura.
+- Implementar a transação interna `OPENING` no caso de uso de criação da wallet quando a persistência existir.
+
 ## 2026-10-29 17:40:42 -03:00 — Objeto de valor Money
 
 **O que foi feito:**
