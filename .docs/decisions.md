@@ -85,3 +85,15 @@ Cada item deverá registrar contexto/problema, alternativas, decisão, justifica
 - **Decisão:** factories `rehydrate` recebem o estado já persistido; não executam transições nem recalculam lançamentos. Datas são copiadas na entrada e na leitura. A `Wallet` ainda preserva saldo não negativo e moeda coerente, enquanto `WalletLedgerEntry.rehydrate` permite que `isBalanced()` revele inconsistência histórica sem alterá-la.
 - **Justificativa:** mantém a reidratação fiel ao estado persistido e evita que consumidores mutem o agregado/registro por referência.
 - **Consequências e trade-offs:** inconsistências persistidas não são “corrigidas” pelo domínio; reconciliação e constraints de banco serão responsabilidades posteriores.
+
+## ADR-007 — WagerTransaction e referências fora de ordem
+
+- **ID:** ADR-007
+- **Status:** aprovada
+- **Data:** 2026-10-30
+- **Contexto e problema:** Transações de aposta podem chegar duplicadas ou fora de ordem, e a entidade precisa preservar estados terminais, referências externas e regras de reversão sem consultar persistência.
+- **Alternativas consideradas:** resolver referências dentro da entidade; aceitar qualquer transição e validar no caso de uso; modelar estados explícitos e validar uma referência já carregada por método de domínio.
+- **Decisão:** `WagerTransaction.create` cria sempre em `PENDING`; `markPendingReference` permite `PENDING → PENDING_REFERENCE`; `markProcessed`, `reject` e `fail` permitem concluir estados não terminais. `PROCESSED`, `REJECTED` e `FAILED` são terminais. `assertValidReference` valida contexto, moeda, tipo, status e igualdade de valor das reversões quando a transação referenciada estiver disponível.
+- **Justificativa:** a entidade representa corretamente a entrega fora de ordem sem cache ou repositório em memória. A referência é identificada pelo `referenceExternalTransactionId`; sua resolução e a prevenção de duas reversões ficam para o caso de uso e constraints persistentes.
+- **Taxonomia de falhas:** `INSUFFICIENT_BALANCE`, `REVERSAL_INSUFFICIENT_BALANCE`, `INVALID_REFERENCE`, `REFERENCE_NOT_FOUND`, `CURRENCY_MISMATCH` e `DUPLICATE_REVERSAL` são códigos estáveis. O código de saldo insuficiente em reversão é distinto do código de aposta sem saldo.
+- **Consequências e trade-offs:** `WIN` pode referenciar uma `BET` da mesma rodada sem exigir igualdade de valor; `REFUND` exige `BET` processada e `ROLLBACK` aceita `BET`, `WIN` ou `REFUND` processadas, sempre com o mesmo valor. `OPENING` existe apenas para uso interno e não deve ser aceito por API/fila.
