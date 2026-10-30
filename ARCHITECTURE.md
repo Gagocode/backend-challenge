@@ -28,7 +28,7 @@ O desafio requer um serviço financeiro distribuído para transações de aposta
 
 | Componente | Responsabilidade | Estado |
 |---|---|---|
-| API HTTP | Wallets, transações, consultas, reconciliação e health checks. | Não implementado |
+| API HTTP | Wallets, transações, consultas, reconciliação e health checks. | Implementado na Etapa 11 |
 | Casos de uso/domínio | Regras, Money, Wallet, transação, ledger e orquestração. | Domínio e casos de uso de wallet/transação implementados e testados |
 | PostgreSQL | Estado, constraints, índices, inbox e outbox. | Wallets, transações e ledger persistidos; Inbox/Outbox não implementados |
 | Consumidor SQS | Reusar caso de uso, registrar inbox e fazer ack após commit. | Não implementado |
@@ -130,3 +130,10 @@ Uma violação concorrente de unicidade é tratada após o rollback da tentativa
 O schema inclui a tabela técnica histórica `migration_probe` e as três tabelas financeiras da Etapa 9; inbox, outbox, consumers e regras de processamento ainda não existem.
 
 O comando de migração foi validado no container da aplicação, usando a rede interna do Compose. Neste ambiente, a porta IPv4 `5432` do host também é ocupada por um PostgreSQL nativo, portanto o acesso do CLI executado no host pode atingir outra instância; isso não afeta a conexão da aplicação com o serviço `postgres` do Compose.
+## API HTTP — Etapa 11
+
+Os endpoints síncronos reutilizam `CreateWalletUseCase` e `ProcessWagerTransactionUseCase`. O hash de idempotência é SHA-256 de JSON canônico recursivamente ordenado dos campos de negócio; `Idempotency-Key` e metadados HTTP ficam fora do hash. O ledger usa cursor opaco base64url contendo `(createdAt,id)` e consulta lexicográfica indexada, sem offset.
+
+Mapeamento HTTP: `400` para payload, header, cursor ou limite inválido; `404` para recurso inexistente; `409` para carteira/transação duplicada ou conflito de idempotência; `422` para rejeição de regra de negócio; `202` para `PENDING_REFERENCE`; `201` para submissão nova processada e `200` para replay; `503` para dependência indisponível; `500` somente para erro inesperado. As respostas não incluem stack trace ou detalhes de banco.
+
+`POST /wallets/:walletId/reconciliation` reconstrói o saldo somando o ledger, registra divergência com log estruturado e nunca corrige dados. Readiness consulta PostgreSQL; SQS ainda não tem cliente nesta etapa e essa limitação é documentada, sem declarar uma verificação falsa.

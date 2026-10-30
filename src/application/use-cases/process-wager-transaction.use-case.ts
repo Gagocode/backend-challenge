@@ -26,6 +26,7 @@ export interface ProcessWagerTransactionResult {
   transaction: WagerTransaction;
   wallet: import('../../domain/wallet/wallet').Wallet;
   idempotentReplay: boolean;
+  balanceAtProcessing?: import('../../domain/money/money').Money;
 }
 
 const isUniqueViolation = (error: unknown): boolean => {
@@ -63,7 +64,7 @@ export class ProcessWagerTransactionUseCase {
     const { wallets, transactions, ledger } = context;
     const existing = await transactions.findByProviderAndIdempotencyKey(command.providerId, command.idempotencyKey, true);
     if (existing && !existing.matchesPayload(command.payloadHash)) throw new FinancialConflictError('Idempotency key was used with a different payload');
-    if (existing && existing.status !== WagerTransactionStatus.PendingReference) return this.replayOrConflict(existing, command.payloadHash, wallets);
+    if (existing && existing.status !== WagerTransactionStatus.PendingReference) return this.replayOrConflict(existing, command.payloadHash, wallets, ledger);
 
     const wallet = await wallets.findById(command.walletId, true);
     if (!wallet) throw new WalletNotFoundError(command.walletId);
@@ -72,7 +73,7 @@ export class ProcessWagerTransactionUseCase {
 
     const existingAfterLock = await transactions.findByProviderAndIdempotencyKey(command.providerId, command.idempotencyKey, true);
     if (existingAfterLock && !existingAfterLock.matchesPayload(command.payloadHash)) throw new FinancialConflictError('Idempotency key was used with a different payload');
-    if (existingAfterLock && existingAfterLock.status !== WagerTransactionStatus.PendingReference) return this.replayOrConflict(existingAfterLock, command.payloadHash, wallets);
+    if (existingAfterLock && existingAfterLock.status !== WagerTransactionStatus.PendingReference) return this.replayOrConflict(existingAfterLock, command.payloadHash, wallets, ledger);
     const transaction = existingAfterLock ?? WagerTransaction.create({ ...command, id: command.id ?? randomUUID() });
     if (!existingAfterLock) {
       const external = await transactions.findByProviderAndExternalId(command.providerId, command.externalTransactionId, true);
@@ -130,13 +131,14 @@ export class ProcessWagerTransactionUseCase {
     const saved = await transactions.save(transaction);
     await wallets.save(wallet);
     await ledger.save(entry);
-    return { transaction: saved, wallet, idempotentReplay: false };
+    return { transaction: saved, wallet, idempotentReplay: false, balanceAtProcessing: entry.balanceAfter };
   }
 
-  private async replayOrConflict(transaction: WagerTransaction, payloadHash: string, wallets: FinancialTransactionContext['wallets']): Promise<ProcessWagerTransactionResult> {
+  private async replayOrConflict(transaction: WagerTransaction, payloadHash: string, wallets: FinancialTransactionContext['wallets'], ledger: FinancialTransactionContext['ledger']): Promise<ProcessWagerTransactionResult> {
     if (!transaction.matchesPayload(payloadHash)) throw new FinancialConflictError('Idempotency key was used with a different payload');
     const wallet = await wallets.findById(transaction.walletId);
     if (!wallet) throw new WalletNotFoundError(transaction.walletId);
-    return { transaction, wallet, idempotentReplay: true };
+    const entry = await ledger.findByTransactionId(transaction.id);
+    return { transaction, wallet, idempotentReplay: true, ...(entry ? { balanceAtProcessing: entry.balanceAfter } : {}) };
   }
 }
