@@ -7,7 +7,7 @@
 | Requisitos do desafio | Definidos no [README.md](README.md) e copiados fielmente em [.docs/challenge.md](.docs/challenge.md). |
 | Propostas arquiteturais | Hipóteses abaixo, ainda não aprovadas nem implementadas. |
 | Decisões aprovadas | Preservação do README como fonte de verdade, separação documental e ADR-003 sobre TypeORM, migrações explícitas e readiness. |
-| Funcionalidades implementadas e validadas | Bootstrap NestJS, conexão TypeORM com PostgreSQL, readiness separado, migrações reversíveis e objeto de valor Money; agregados financeiros ainda não implementados. |
+| Funcionalidades implementadas e validadas | Bootstrap NestJS, conexão TypeORM com PostgreSQL, readiness separado, migrações reversíveis, Money e os agregados de domínio Wallet/WalletLedgerEntry; persistência financeira ainda não implementada. |
 
 ## Visão geral
 
@@ -29,7 +29,7 @@ O desafio requer um serviço financeiro distribuído para transações de aposta
 | Componente | Responsabilidade | Estado |
 |---|---|---|
 | API HTTP | Wallets, transações, consultas, reconciliação e health checks. | Não implementado |
-| Casos de uso/domínio | Regras, Money, Wallet, transação, ledger e idempotência. | Money implementado e testado; demais componentes não implementados |
+| Casos de uso/domínio | Regras, Money, Wallet, transação, ledger e idempotência. | Money, Wallet e WalletLedgerEntry implementados e testados; WagerTransaction e demais componentes não implementados |
 | PostgreSQL | Estado, constraints, índices, inbox e outbox. | Não configurado |
 | Consumidor SQS | Reusar caso de uso, registrar inbox e fazer ack após commit. | Não implementado |
 | Worker de referências | Reprocessar `PENDING_REFERENCE`. | Não implementado |
@@ -79,6 +79,14 @@ Autenticação é opcional e não pontua. Se adotada, exige IdP externo; health 
 - Entradas monetárias são strings decimais não negativas com até duas casas; saída é sempre uma string com duas casas.
 - `Money` permanece independente de NestJS, TypeORM, PostgreSQL e SQS.
 
+## Decisões aprovadas na etapa Wallet e WalletLedgerEntry
+
+- `Wallet` possui construtor privado, factories `open`/`rehydrate`, identificadores somente leitura, saldo encapsulado e `version` iniciando em `1`.
+- `debit` e `credit` recebem uma especificação com `id`, `transactionId`, `money` e data opcional, retornam o `WalletLedgerEntry` correspondente e só alteram o saldo após a validação aritmética do lançamento.
+- Moeda incompatível, movimentação negativa e débito sem saldo são rejeitados; a versão só incrementa quando o saldo efetivamente muda. O lançamento é criado mesmo para movimento zero, mas a versão permanece igual.
+- `WalletLedgerEntry` é estruturalmente imutável. `create` valida `balanceBefore ± money === balanceAfter`; `rehydrate` reconstrói sem revalidar a transição, e `isBalanced()` permite consultar o estado persistido.
+- A atomicidade entre wallet e ledger não é simulada no domínio: será garantida pela mesma transação SQL quando a persistência for implementada. A transação interna `OPENING` e seu lançamento também ficam para essa camada de caso de uso/persistência.
+
 ## Decisões pendentes
 
 - Schema de domínio e mapeamento de Money na persistência.
@@ -92,6 +100,6 @@ Autenticação é opcional e não pontua. Se adotada, exige IdP externo; health 
 
 ## Limitações conhecidas
 
-O schema atual possui somente a tabela técnica temporária `migration_probe` para validar o mecanismo de migrações. Não há entidades financeiras, wallets, ledger, inbox, outbox, consumers ou regras de apostas.
+O schema atual possui somente a tabela técnica temporária `migration_probe` para validar o mecanismo de migrações. Wallet e WalletLedgerEntry existem apenas no domínio; ainda não há tabelas financeiras, inbox, outbox, consumers ou regras de apostas.
 
 O comando de migração foi validado no container da aplicação, usando a rede interna do Compose. Neste ambiente, a porta IPv4 `5432` do host também é ocupada por um PostgreSQL nativo, portanto o acesso do CLI executado no host pode atingir outra instância; isso não afeta a conexão da aplicação com o serviço `postgres` do Compose.

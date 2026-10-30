@@ -63,3 +63,25 @@ Status possíveis: **proposta**, **aprovada** e **substituída**. O [README](../
 | PEND-009 | OpenAPI | proposta | Definir geração, validação e disponibilização. |
 
 Cada item deverá registrar contexto/problema, alternativas, decisão, justificativa, consequências/trade-offs e data antes de receber status **aprovada**.
+
+## ADR-005 — Transições explícitas de Wallet e ledger
+
+- **ID:** ADR-005
+- **Status:** aprovada
+- **Data:** 2026-10-30
+- **Contexto e problema:** A alteração do saldo e o lançamento correspondente precisam ser produzidos pela mesma regra de domínio, sem simular atomicidade por cache ou estado paralelo em memória.
+- **Alternativas consideradas:** alterar a Wallet e deixar o caso de uso montar o ledger; retornar somente o novo saldo; receber uma especificação de movimento e retornar o lançamento criado.
+- **Decisão:** `Wallet.debit` e `Wallet.credit` recebem `{ id, transactionId, money, at? }`, validam moeda, sinal e saldo, criam e retornam um `WalletLedgerEntry`, e somente então aplicam a nova versão do saldo. O caso de uso/persistência posterior gravará os dois resultados na mesma transação SQL.
+- **Justificativa:** a API torna explícita a correspondência entre transição e lançamento e impede que o chamador construa um ledger divergente. A Wallet continua sendo o aggregate root; o ledger não possui operações de alteração.
+- **Consequências e trade-offs:** a criação de uma wallet não fabrica um lançamento sem `transactionId`; o caso de uso de abertura deverá criar a transação interna `OPENING` e seu ledger na transação SQL prevista pelo desafio. Movimentos de valor zero podem gerar lançamento matematicamente balanceado, mas não incrementam `version`.
+
+## ADR-006 — Reidratação e imutabilidade temporal
+
+- **ID:** ADR-006
+- **Status:** aprovada
+- **Data:** 2026-10-30
+- **Contexto e problema:** Wallet e ledger precisam reconstruir estado persistido sem expor mutabilidade acidental por objetos `Date`.
+- **Alternativas consideradas:** expor `Date` diretamente; converter datas para strings no domínio; armazenar datas internamente e retornar cópias.
+- **Decisão:** factories `rehydrate` recebem o estado já persistido; não executam transições nem recalculam lançamentos. Datas são copiadas na entrada e na leitura. A `Wallet` ainda preserva saldo não negativo e moeda coerente, enquanto `WalletLedgerEntry.rehydrate` permite que `isBalanced()` revele inconsistência histórica sem alterá-la.
+- **Justificativa:** mantém a reidratação fiel ao estado persistido e evita que consumidores mutem o agregado/registro por referência.
+- **Consequências e trade-offs:** inconsistências persistidas não são “corrigidas” pelo domínio; reconciliação e constraints de banco serão responsabilidades posteriores.
