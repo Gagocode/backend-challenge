@@ -267,3 +267,56 @@ O diário incremental e a regra metodológica foram atualizados. A implementaç�
 
 Registrar cada nova etapa relevante no início deste arquivo antes de encerrar a etapa, incluindo arquivos afetados, validações reais e pendências.
 
+## 2026-10-30 13:52:21 -03:00 — Etapa 9: persistência financeira PostgreSQL e TypeORM
+
+**O que foi feito:**
+
+- Criadas as entidades TypeORM isoladas `WalletEntity`, `WagerTransactionEntity` e `WalletLedgerEntryEntity`.
+- Criada a migração reversível `CreateFinancialPersistence1710000001000` para wallets, transações e ledger, com UUIDs, NUMERIC(20,2), constraints, FKs, índices, unicidades, trigger de imutabilidade e validação aritmética.
+- Criados mappers explícitos com `Money` como string decimal e reidratação pelas factories do domínio.
+- Criados contratos de repositório na camada de aplicação e implementações TypeORM para wallet, transação, referências externas/status e ledger.
+- Preparado lock pessimista por `walletId` para transações SQL futuras; nenhum lock global em memória foi criado.
+- Criado teste de integração que usa `DataSource` real quando `DATABASE_URL` está presente, cobrindo persistência/reidratação, precisão, unicidade, FK, saldo negativo e imutabilidade.
+- Atualizados `ARCHITECTURE.md` e `.docs/decisions.md` com schema, mapeamento, concorrência e trade-offs.
+
+**Validação real:**
+
+- `bun run typecheck` → aprovado.
+- `bun run build` → aprovado.
+- `bun test` → 32 aprovados, 4 ignorados por ausência de `DATABASE_URL`; não é aprovação da integração PostgreSQL.
+- `docker compose up -d postgres` → não executado: Docker Engine indisponível no ambiente (`docker_engine` não encontrado).
+- Migração e teste de integração contra PostgreSQL real → pendentes pela indisponibilidade do Docker.
+
+**Escopo preservado:** não foram implementados processamento completo de apostas, controllers, Inbox, Outbox ou consumidor SQS.
+
+**Pendências:** iniciar o Docker/PostgreSQL e executar o teste de integração, `migration:run`, `migration:revert` e a validação final completa.
+
+## 2026-10-30 14:02:17 -03:00 — Auditoria e validação final da Etapa 9
+
+**Auditoria e correções:**
+
+- Confirmada a causa dos testes anteriormente ignorados: `DATABASE_URL` ausente acionava `describe.skip` na suíte de integração.
+- Confirmado que o Docker Engine/Desktop e PostgreSQL 16 do Compose estavam acessíveis e healthy; os testes usaram `postgresql://wager:...@localhost:5432/wager`.
+- Identificado e corrigido o `afterAll` da integração, que desfazia migrações do banco compartilhado. A suíte agora apenas encerra a conexão, preservando dados e schema.
+- Identificados identificadores fixos que tornavam a suíte não repetível após a primeira execução; external transaction IDs e idempotency keys de constraint passaram a ser únicos por execução.
+- Adicionada cobertura real para FK de referência, unicidade de idempotência, trigger de aritmética do ledger e bloqueio pessimista por wallet em duas transações SQL concorrentes.
+
+**Validação PostgreSQL real:**
+
+- `docker compose up -d postgres` e `docker compose ps` → PostgreSQL healthy, sem remoção de volumes.
+- `bun run migration:run` no banco principal → aplicadas as duas migrações pendentes.
+- Inspeção SQL → confirmadas as três tabelas financeiras, 16 índices, 25 constraints e os triggers `wallet_ledger_entries_arithmetic` e `wallet_ledger_entries_immutable`.
+- Banco isolado `wager_migration_validation` → `migration:run`, `migration:revert` e `migration:run` executados com sucesso; reaplicação restaurou as tabelas financeiras.
+- Teste de integração dedicado → 3 pass, 0 fail, 16 expectativas.
+- Suíte completa `bun test` com `DATABASE_URL` real → 35 pass, 0 fail, 137 expectativas, 0 skipped.
+
+**Validação final:**
+
+- `bun run typecheck` → aprovado.
+- `bun run build` → aprovado.
+- `git diff --check` → aprovado; somente aviso informativo de conversão LF/CRLF.
+
+**Resultado:**
+
+A persistência financeira da Etapa 9 foi validada contra PostgreSQL real. Não foram implementados API HTTP, processamento completo de apostas, Inbox, Outbox ou SQS. O banco isolado de validação foi preservado para auditoria; nenhum volume ou dado do banco principal foi removido.
+

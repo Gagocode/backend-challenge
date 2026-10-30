@@ -7,7 +7,7 @@
 | Requisitos do desafio | Definidos no [README.md](README.md) e copiados fielmente em [.docs/challenge.md](.docs/challenge.md). |
 | Propostas arquiteturais | Hipóteses abaixo, ainda não aprovadas nem implementadas. |
 | Decisões aprovadas | Preservação do README como fonte de verdade, separação documental e ADR-003 sobre TypeORM, migrações explícitas e readiness. |
-| Funcionalidades implementadas e validadas | Bootstrap NestJS, conexão TypeORM com PostgreSQL, readiness separado, migrações reversíveis, Money, Wallet, WalletLedgerEntry e WagerTransaction; persistência financeira ainda não implementada. |
+| Funcionalidades implementadas e validadas | Bootstrap NestJS, conexão TypeORM, readiness separado, migrações reversíveis, domínio financeiro e camada de persistência financeira; integração real depende de Docker PostgreSQL disponível. |
 
 ## Visão geral
 
@@ -66,6 +66,16 @@ API e SQS devem reutilizar o mesmo caso de uso, como exige o desafio; a semânti
 
 Autenticação é opcional e não pontua. Se adotada, exige IdP externo; health fica aberto e SQS é canal interno confiável, sem dispensar validações de domínio. A decisão está pendente.
 
+## Persistência financeira — Etapa 9
+
+As tabelas `wallets`, `wager_transactions` e `wallet_ledger_entries` são criadas por migração reversível. Identificadores são UUID; `NUMERIC(20,2)` é usado para saldo, movimento e snapshots do ledger, e o driver TypeORM é tratado como `string`. O mapeamento transforma essa string em `Money.from({ amount, currency })`; a leitura do agregado usa `Wallet.rehydrate`, `WagerTransaction.rehydrate` e `WalletLedgerEntry.rehydrate`, sem decorators no domínio.
+
+Constraints principais: `player_id + currency` único; `provider_id + external_transaction_id` único; idempotência única por `provider_id + idempotency_key`; enums de kind/status/direction; moeda ISO de três letras; valores não negativos; FKs de transação e ledger para wallet; FK opcional de referência para transação; e no máximo um lançamento por `(transaction_id, wallet_id)`. FKs compostas também impedem moeda divergente da wallet. Índices cobrem wallet/status, provider/status, referência e consultas de ledger por wallet/tempo. Um índice parcial impede duas reversões do mesmo tipo para a mesma referência.
+
+O ledger é append-only: trigger PostgreSQL rejeita `UPDATE` e `DELETE`, e outro trigger verifica a aritmética `DEBIT`/`CREDIT` na inserção. A alteração de wallet, transação e lançamento deve ser feita pelo futuro caso de uso na mesma transação SQL. O repositório de wallet disponibiliza `FOR UPDATE` pessimista por linha, deixando wallets distintas em paralelo e evitando lost update entre instâncias.
+
+Contratos estão em `src/application/ports`; implementações TypeORM ficam em `src/persistence/repositories`; entidades e mappers são infraestrutura. Nenhum controller, Inbox, Outbox, consumidor SQS ou processamento de apostas foi incluído.
+
 ## Decisões aprovadas na etapa de persistência
 
 - TypeORM com `@nestjs/typeorm` e `pg` foi escolhido dentro das alternativas permitidas.
@@ -97,8 +107,7 @@ Autenticação é opcional e não pontua. Se adotada, exige IdP externo; health 
 
 ## Decisões pendentes
 
-- Schema de domínio e mapeamento de Money na persistência.
-- Concorrência por wallet e retry de conflitos.
+- Retry de deadlock/timeout e o caso de uso que coordenará wallet, transação e ledger.
 - Idempotência, JSON canônico e payload hash.
 - Processamento HTTP síncrono versus assíncrono e status HTTP.
 - Tentativas, backoff, visibilidade, DLQ e shutdown da SQS.
@@ -108,6 +117,6 @@ Autenticação é opcional e não pontua. Se adotada, exige IdP externo; health 
 
 ## Limitações conhecidas
 
-O schema atual possui somente a tabela técnica temporária `migration_probe` para validar o mecanismo de migrações. Wallet e WalletLedgerEntry existem apenas no domínio; ainda não há tabelas financeiras, inbox, outbox, consumers ou regras de apostas.
+O schema inclui a tabela técnica histórica `migration_probe` e as três tabelas financeiras da Etapa 9; inbox, outbox, consumers e regras de processamento ainda não existem.
 
 O comando de migração foi validado no container da aplicação, usando a rede interna do Compose. Neste ambiente, a porta IPv4 `5432` do host também é ocupada por um PostgreSQL nativo, portanto o acesso do CLI executado no host pode atingir outra instância; isso não afeta a conexão da aplicação com o serviço `postgres` do Compose.
