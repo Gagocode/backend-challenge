@@ -320,3 +320,31 @@ Registrar cada nova etapa relevante no início deste arquivo antes de encerrar a
 
 A persistência financeira da Etapa 9 foi validada contra PostgreSQL real. Não foram implementados API HTTP, processamento completo de apostas, Inbox, Outbox ou SQS. O banco isolado de validação foi preservado para auditoria; nenhum volume ou dado do banco principal foi removido.
 
+## 2026-10-30 14:17:11 -03:00 — Etapa 10: casos de uso e orquestração financeira
+
+**O que foi feito:**
+
+- Criada a porta `FinancialUnitOfWork` e a implementação `TypeOrmFinancialUnitOfWork`, usando `DataSource.transaction` e os repositórios com o mesmo `EntityManager` transacional.
+- Implementado `CreateWalletUseCase`: wallet vazia sem abertura; wallet financiada com `OPENING` e `CREDIT` no ledger na mesma transação; conflitos de player/moeda tratados sem confiar apenas no pre-check.
+- Implementado `ProcessWagerTransactionUseCase` para `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK`.
+- Aplicado lock pessimista da wallet durante a operação, validação de player/moeda, transições de domínio, persistência atômica e rejeições auditáveis sem ledger.
+- Implementada idempotência por chave/payload, tratamento de corrida de unicidade PostgreSQL, conflito de payload e replay sem novo lançamento.
+- Implementado reprocessamento de `PENDING_REFERENCE` quando a referência passa a existir.
+- Atualizados os contratos para consultas de transação com `FOR UPDATE`.
+- Criados 10 testes de integração adicionais contra PostgreSQL real cobrindo criação, `OPENING`, rollback, todas as operações, idempotência, reversões, referências fora de ordem e concorrência.
+- Atualizados `ARCHITECTURE.md` e `.docs/decisions.md` com a unidade de trabalho, ordem dos locks, atomicidade e política de idempotência.
+
+**Ambiguidade registrada:**
+
+- O domínio existente só permite `PENDING_REFERENCE` para `REFUND` e `ROLLBACK`; `WIN` com referência informada e ausente é rejeitado como `REFERENCE_NOT_FOUND`, preservando o contrato atual sem inventar uma nova transição.
+
+**Validação real:**
+
+- `bun test test/financial-use-cases.integration.test.ts` → 10 pass, 0 fail, 40 expectativas, usando PostgreSQL do Docker Compose.
+- `bun run typecheck` → aprovado.
+- `bun run build` → aprovado.
+- `bun test` → 45 pass, 0 fail, 177 expectativas, 0 skipped.
+- `git diff --check` → aprovado.
+
+**Escopo preservado:** não foram implementados controllers HTTP, consumer SQS, Inbox, Outbox, publicação de eventos, reconciliação, observabilidade avançada ou autenticação. Nenhuma migração foi necessária.
+

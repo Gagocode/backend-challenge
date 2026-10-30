@@ -7,7 +7,7 @@
 | Requisitos do desafio | Definidos no [README.md](README.md) e copiados fielmente em [.docs/challenge.md](.docs/challenge.md). |
 | Propostas arquiteturais | Hipóteses abaixo, ainda não aprovadas nem implementadas. |
 | Decisões aprovadas | Preservação do README como fonte de verdade, separação documental e ADR-003 sobre TypeORM, migrações explícitas e readiness. |
-| Funcionalidades implementadas e validadas | Bootstrap NestJS, conexão TypeORM, readiness separado, migrações reversíveis, domínio financeiro e camada de persistência financeira; integração real depende de Docker PostgreSQL disponível. |
+| Funcionalidades implementadas e validadas | Bootstrap NestJS, conexão TypeORM, readiness separado, migrações reversíveis, domínio financeiro, persistência financeira e casos de uso transacionais; controllers e mensageria permanecem fora do escopo. |
 
 ## Visão geral
 
@@ -29,8 +29,8 @@ O desafio requer um serviço financeiro distribuído para transações de aposta
 | Componente | Responsabilidade | Estado |
 |---|---|---|
 | API HTTP | Wallets, transações, consultas, reconciliação e health checks. | Não implementado |
-| Casos de uso/domínio | Regras, Money, Wallet, transação, ledger e idempotência. | Money, Wallet, WalletLedgerEntry e WagerTransaction implementados e testados; demais componentes não implementados |
-| PostgreSQL | Estado, constraints, índices, inbox e outbox. | Não configurado |
+| Casos de uso/domínio | Regras, Money, Wallet, transação, ledger e orquestração. | Domínio e casos de uso de wallet/transação implementados e testados |
+| PostgreSQL | Estado, constraints, índices, inbox e outbox. | Wallets, transações e ledger persistidos; Inbox/Outbox não implementados |
 | Consumidor SQS | Reusar caso de uso, registrar inbox e fazer ack após commit. | Não implementado |
 | Worker de referências | Reprocessar `PENDING_REFERENCE`. | Não implementado |
 | Publisher outbox | Publicar pendências concorrentemente e recuperar falhas. | Não implementado |
@@ -76,6 +76,16 @@ O ledger é append-only: trigger PostgreSQL rejeita `UPDATE` e `DELETE`, e outro
 
 Contratos estão em `src/application/ports`; implementações TypeORM ficam em `src/persistence/repositories`; entidades e mappers são infraestrutura. Nenhum controller, Inbox, Outbox, consumidor SQS ou processamento de apostas foi incluído.
 
+## Casos de uso e orquestração — Etapa 10
+
+`CreateWalletUseCase` e `ProcessWagerTransactionUseCase` dependem somente das portas da aplicação. `TypeOrmFinancialUnitOfWork` adapta `DataSource.transaction` e cria repositórios com o `EntityManager` transacional, garantindo que wallet, transação e ledger compartilhem a mesma conexão e commit.
+
+Na criação financiada, a wallet nasce com o saldo materializado e a operação `OPENING`/ledger é criada na mesma unidade SQL; o lançamento usa `balanceBefore = 0.00` e preserva a versão inicial da wallet conforme o contrato de resposta. Falha de qualquer insert provoca rollback, impedindo wallet sem registro contábil.
+
+No processamento, a aplicação verifica replay por `(providerId, idempotencyKey)`, bloqueia a wallet com `FOR UPDATE` e revalida a idempotência após o lock. A operação é aplicada pelo domínio, e wallet, transação e ledger são salvos atomicamente. Rejeições de negócio (`INSUFFICIENT_BALANCE`, `REVERSAL_INSUFFICIENT_BALANCE`, `INVALID_REFERENCE`, `REFERENCE_NOT_FOUND` e `CURRENCY_MISMATCH`) são persistidas como transações terminais sem ledger; falhas de infraestrutura fazem a transação SQL inteira retornar e não deixam estado parcial.
+
+Uma violação concorrente de unicidade é tratada após o rollback da tentativa: a aplicação relê a chave de idempotência e retorna replay se o payload coincidir, ou conflito se divergir. A constraint PostgreSQL continua sendo a garantia final. Uma transação `PENDING_REFERENCE` é reprocessada pela mesma chave quando a referência passa a existir. `WIN` com referência ausente segue a limitação expressa no domínio: não possui transição `PENDING_REFERENCE` e é rejeitado como referência ausente.
+
 ## Decisões aprovadas na etapa de persistência
 
 - TypeORM com `@nestjs/typeorm` e `pg` foi escolhido dentro das alternativas permitidas.
@@ -107,7 +117,7 @@ Contratos estão em `src/application/ports`; implementações TypeORM ficam em `
 
 ## Decisões pendentes
 
-- Retry de deadlock/timeout e o caso de uso que coordenará wallet, transação e ledger.
+- Retry de deadlock/timeout; o caso de uso atual deixa esses erros para a camada de entrada decidir, sem repetir automaticamente uma operação financeira.
 - Idempotência, JSON canônico e payload hash.
 - Processamento HTTP síncrono versus assíncrono e status HTTP.
 - Tentativas, backoff, visibilidade, DLQ e shutdown da SQS.
