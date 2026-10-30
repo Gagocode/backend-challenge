@@ -85,6 +85,16 @@ Cada item deverá registrar contexto/problema, alternativas, decisão, justifica
 - **Justificativa:** o lock é distribuído pelo PostgreSQL, funciona entre processos e mantém wallets diferentes em paralelo; não há lock global em memória.
 - **Consequências e trade-offs:** o fluxo financeiro completo e retries de deadlock/timeout permanecem fora desta etapa; os chamadores devem usar o método `forUpdate` somente dentro de uma transação ativa.
 
+## ADR-010 — Unidade de trabalho e idempotência dos casos de uso
+
+- **ID:** ADR-010
+- **Status:** aprovada
+- **Data:** 2026-10-30
+- **Contexto e problema:** A Etapa 10 precisa coordenar wallet, transação e ledger atomicamente, inclusive quando duas instâncias recebem a mesma operação ou quando uma referência chega fora de ordem.
+- **Decisão:** introduzir a porta `FinancialUnitOfWork` na aplicação e a implementação `TypeOrmFinancialUnitOfWork`, baseada em `DataSource.transaction`. O caso de uso bloqueia a wallet com `pessimistic_write`, consulta novamente a idempotência após o lock e trata uma violação de unicidade pós-commit tentado relendo a chave persistida. `PENDING_REFERENCE` é reprocessada pela mesma operação quando a referência aparece.
+- **Justificativa:** mantém TypeORM na infraestrutura, cobre concorrência entre processos e deixa o PostgreSQL como autoridade final de unicidade; falhas inesperadas não são repetidas automaticamente nem deixam alterações parciais.
+- **Consequências e trade-offs:** conflito de transação externa e payload divergente são erros de aplicação; retry de deadlock/timeout e integração HTTP/SQS ficam para etapas posteriores. `WIN` sem referência disponível é rejeitado quando uma referência foi informada, pois o domínio não oferece `PENDING_REFERENCE` para WIN.
+
 ## ADR-005 — Transições explícitas de Wallet e ledger
 
 - **ID:** ADR-005
