@@ -1,5 +1,36 @@
 # Diário de progresso
 
+## 2026-10-30 10:01:55 -03:00 — Domínio WagerTransaction
+
+**O que foi feito:**
+
+- Criado `src/domain/wager-transaction/wager-transaction.ts` com `WagerTransactionKind`, `WagerTransactionStatus`, `FailureCode`, factories `create`/`rehydrate` e estado encapsulado.
+- Implementadas as transições `PENDING`, `PENDING_REFERENCE`, `PROCESSED`, `REJECTED` e `FAILED`, com estados terminais protegidos.
+- Implementadas as regras de efeito no saldo, direção do ledger, exigência de referência, payload hash e referências entre transações.
+- Criado `test/wager-transaction.test.ts` cobrindo criação, reidratação, todos os tipos, validações, transições, referências, moedas, valores e imutabilidade.
+- Atualizados `.docs/decisions.md` com ADR-007 e `ARCHITECTURE.md` com o modelo e as transições.
+- Nenhuma persistência, repositório, controller, endpoint, consumidor SQS, Inbox, Outbox ou processamento distribuído foi implementado.
+
+**Decisões e ambiguidades registradas:**
+
+- Referências ausentes não são resolvidas na entidade: a transação pode passar para `PENDING_REFERENCE` e o worker/caso de uso futuro fará a resolução persistente.
+- `WIN` pode referenciar `BET` sem igualdade de valor; igualdade de valor é exigida apenas para `REFUND` e `ROLLBACK`, conforme o README.
+- A entidade valida uma referência já carregada, mas prevenção de reversão duplicada depende de persistência/constraints futuras.
+- `OPENING` foi modelado como tipo interno do domínio, mas não deve ser aceito por API ou fila.
+- Foram definidos códigos estáveis, incluindo `REVERSAL_INSUFFICIENT_BALANCE`, distinto de `INSUFFICIENT_BALANCE`.
+
+**Validação e testes:**
+
+- `bun run typecheck` → aprovado.
+- `bun test` → aprovado durante a implementação: 32 testes, 0 falhas e 121 expectativas.
+- `bun run build` → aprovado.
+- `git diff --check` → aprovado, sem erros.
+
+**Pendências:**
+
+- Persistir transações e impor unicidade/idempotência, referências e prevenção de reversões duplicadas no schema SQL em etapa futura.
+- Implementar o caso de uso que coordena `WagerTransaction`, Wallet, ledger, Inbox e Outbox em uma transação SQL.
+
 ## 2026-10-30 09:51:37 -03:00 — Domínio Wallet e WalletLedgerEntry
 
 **O que foi feito:**

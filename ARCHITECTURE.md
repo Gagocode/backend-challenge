@@ -7,7 +7,7 @@
 | Requisitos do desafio | Definidos no [README.md](README.md) e copiados fielmente em [.docs/challenge.md](.docs/challenge.md). |
 | Propostas arquiteturais | Hipóteses abaixo, ainda não aprovadas nem implementadas. |
 | Decisões aprovadas | Preservação do README como fonte de verdade, separação documental e ADR-003 sobre TypeORM, migrações explícitas e readiness. |
-| Funcionalidades implementadas e validadas | Bootstrap NestJS, conexão TypeORM com PostgreSQL, readiness separado, migrações reversíveis, Money e os agregados de domínio Wallet/WalletLedgerEntry; persistência financeira ainda não implementada. |
+| Funcionalidades implementadas e validadas | Bootstrap NestJS, conexão TypeORM com PostgreSQL, readiness separado, migrações reversíveis, Money, Wallet, WalletLedgerEntry e WagerTransaction; persistência financeira ainda não implementada. |
 
 ## Visão geral
 
@@ -29,7 +29,7 @@ O desafio requer um serviço financeiro distribuído para transações de aposta
 | Componente | Responsabilidade | Estado |
 |---|---|---|
 | API HTTP | Wallets, transações, consultas, reconciliação e health checks. | Não implementado |
-| Casos de uso/domínio | Regras, Money, Wallet, transação, ledger e idempotência. | Money, Wallet e WalletLedgerEntry implementados e testados; WagerTransaction e demais componentes não implementados |
+| Casos de uso/domínio | Regras, Money, Wallet, transação, ledger e idempotência. | Money, Wallet, WalletLedgerEntry e WagerTransaction implementados e testados; demais componentes não implementados |
 | PostgreSQL | Estado, constraints, índices, inbox e outbox. | Não configurado |
 | Consumidor SQS | Reusar caso de uso, registrar inbox e fazer ack após commit. | Não implementado |
 | Worker de referências | Reprocessar `PENDING_REFERENCE`. | Não implementado |
@@ -86,6 +86,14 @@ Autenticação é opcional e não pontua. Se adotada, exige IdP externo; health 
 - Moeda incompatível, movimentação negativa e débito sem saldo são rejeitados; a versão só incrementa quando o saldo efetivamente muda. O lançamento é criado mesmo para movimento zero, mas a versão permanece igual.
 - `WalletLedgerEntry` é estruturalmente imutável. `create` valida `balanceBefore ± money === balanceAfter`; `rehydrate` reconstrói sem revalidar a transição, e `isBalanced()` permite consultar o estado persistido.
 - A atomicidade entre wallet e ledger não é simulada no domínio: será garantida pela mesma transação SQL quando a persistência for implementada. A transação interna `OPENING` e seu lançamento também ficam para essa camada de caso de uso/persistência.
+
+## Decisões aprovadas na etapa WagerTransaction
+
+- `WagerTransaction` possui factories `create`/`rehydrate`, identificadores e dados de negócio imutáveis, `Money`, referência externa opcional e estado encapsulado.
+- `create` inicia em `PENDING`. As transições permitidas são `PENDING → PENDING_REFERENCE`, `PENDING/PENDING_REFERENCE → PROCESSED`, `REJECTED` ou `FAILED`; os três estados finais são terminais.
+- `REFUND` e `ROLLBACK` exigem referência externa. A entidade valida referências carregadas por provider, player, wallet, moeda e round; `REFUND` só aceita `BET`, `ROLLBACK` aceita `BET`, `WIN` ou `REFUND`, e reversões exigem estado `PROCESSED` e valor igual.
+- A ausência ou duplicidade de referência não é resolvida por memória: `PENDING_REFERENCE`, consulta persistente e constraints futuras serão responsabilidade da aplicação/persistência. `OPENING` é mantido apenas como tipo interno.
+- `LOSS` não afeta saldo e não possui direção de ledger. `BET` é débito, `WIN`/`REFUND` são créditos e `ROLLBACK` inverte a direção da referência.
 
 ## Decisões pendentes
 
