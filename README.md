@@ -89,6 +89,7 @@ Variáveis do `.env.example` e configurações opcionais reconhecidas pelo Compo
 | Variável | Finalidade |
 | --- | --- |
 | `APP_PORT` | Porta publicada no host pelo Compose; o container continua escutando em `PORT=3000`. |
+| `API_DOCS_ENABLED` | Habilita ou desabilita Swagger; Compose local usa `true`, enquanto o default da aplicação em `NODE_ENV=production` é desabilitado. |
 | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Credenciais e banco do PostgreSQL local. |
 | `POSTGRES_PORT` | Porta local publicada pelo PostgreSQL. |
 | `DATABASE_URL` | String de conexão usada pelos comandos executados no host. |
@@ -153,6 +154,10 @@ bun run migration:create -- AddMigrationName
 Os comandos usam `DATABASE_URL` do ambiente. A imagem runtime do Compose contém o build da aplicação; execute as migrações pelo host com Bun.
 
 ## Endpoints HTTP
+
+### Swagger / OpenAPI
+
+Com a aplicação em execução, a interface interativa fica em `http://localhost:3000/api/docs` e o documento OpenAPI JSON em `http://localhost:3000/api/docs-json` (ajuste a porta conforme `APP_PORT`). A documentação é habilitada por padrão em desenvolvimento e pelo Compose local; fora do desenvolvimento, fica desabilitada por padrão quando `NODE_ENV=production`. `API_DOCS_ENABLED=true|false` permite sobrescrever esse padrão. A documentação não adiciona autenticação e descreve somente os contratos HTTP, sem expor consumidores, workers ou filas internas.
 
 Os endpoints não exigem autenticação nesta implementação.
 

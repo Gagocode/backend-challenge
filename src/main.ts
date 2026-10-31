@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { HttpErrorFilter } from './http/error.filter';
 import { StructuredLogger } from './observability/structured-logger';
+import { isOpenApiEnabled, setupOpenApi } from './http/openapi';
 
 async function bootstrap(): Promise<void> {
   const logger = new StructuredLogger();
@@ -10,6 +11,7 @@ async function bootstrap(): Promise<void> {
     const app = await NestFactory.create(AppModule, { logger: false });
     app.enableShutdownHooks(['SIGINT', 'SIGTERM']);
     app.useGlobalFilters(new HttpErrorFilter(logger));
+    if (isOpenApiEnabled()) setupOpenApi(app);
     await app.listen(Number(process.env.PORT ?? 3000));
     logger.info('application_started', { component: 'bootstrap' });
   } catch (error: unknown) {
