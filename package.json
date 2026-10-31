@@ -1,0 +1,38 @@
+{
+  "name": "distributed-wagering-processor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "migration:create": "bun src/database/migration-cli.ts create",
+    "migration:revert": "bun src/database/migration-runner.ts revert",
+    "migration:run": "bun src/database/migration-runner.ts run",
+    "start": "bun dist/main.js",
+    "start:dev": "bun --watch src/main.ts",
+    "test": "bun run test:unit && bun run test:integration",
+    "test:unit": "bun test test/database.config.test.ts test/health.controller.test.ts test/integration-events.test.ts test/messaging.regression.test.ts test/money.test.ts test/observability.test.ts test/readiness.controller.test.ts test/wager-transaction.test.ts test/wallet.test.ts",
+    "test:integration": "bun scripts/run-integration-tests.ts",
+    "test:sqs": "bun scripts/run-integration-tests.ts test/sqs.regression.integration.test.ts test/distributed-recovery.integration.test.ts",
+    "test:migrations": "bun scripts/verify-migrations.ts",
+    "test:watch": "bun test --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sqs": "^3.1161.0",
+    "@nestjs/common": "^11.0.11",
+    "@nestjs/config": "^4.0.2",
+    "@nestjs/core": "^11.0.11",
+    "@nestjs/platform-express": "^11.0.11",
+    "@nestjs/typeorm": "^11.0.0",
+    "pg": "^8.13.3",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "typeorm": "^0.3.22"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.5",
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.2"
+  }
+}
