@@ -48,25 +48,45 @@ Mais detalhes estão em [ARCHITECTURE.md](ARCHITECTURE.md) e as decisões histó
 - Docker Engine com Docker Compose.
 - Portas locais 3000, 5432 e 4566 disponíveis.
 
-## Configuração de ambiente
+## Quickstart
 
-Copie o arquivo de exemplo:
+No clone do repositório, instale as dependências, copie a configuração de exemplo e inicie PostgreSQL, LocalStack e a aplicação:
 
 ```bash
+bun install
 cp .env.example .env
+docker compose up -d --build
 ```
 
-No PowerShell:
+No PowerShell, use `Copy-Item .env.example .env` no lugar do `cp`. O Compose publica a aplicação em `APP_PORT` (padrão `3000`), PostgreSQL em `POSTGRES_PORT` (padrão `5432`) e LocalStack em `LOCALSTACK_PORT` (padrão `4566`). Dentro do container, a aplicação escuta em `PORT=3000`; o Compose mapeia `${APP_PORT:-3000}:3000`.
+
+O Compose **não aplica migrations**. Com os containers ativos, execute-as no host com Bun e `DATABASE_URL` apontando para a porta publicada do PostgreSQL e para as credenciais configuradas. O Bun lê o `.env` copiado no diretório do projeto; se a URL não estiver disponível no processo, defina-a explicitamente, por exemplo no PowerShell:
 
 ```powershell
-Copy-Item .env.example .env
+$env:DATABASE_URL = "postgresql://wager:change-me-local-only@localhost:5432/wager"
+bun run migration:run
 ```
 
-Variáveis do arquivo `.env.example`:
+Em shells Bash, a mesma configuração pode ser exportada com `export DATABASE_URL=postgresql://wager:change-me-local-only@localhost:5432/wager` antes de `bun run migration:run`. Se alterar `POSTGRES_PORT`, usuário, senha ou banco, ajuste a URL de acordo.
+
+Depois da inicialização pelo Compose e da aplicação das migrations, confirme liveness e readiness:
+
+```bash
+curl http://localhost:3000/health/live
+curl http://localhost:3000/health/ready
+```
+
+Substitua `3000` pela porta configurada em `APP_PORT`, se diferente. O liveness verifica o processo; readiness verifica PostgreSQL e SQS. A aplicação já é iniciada pelo Compose. No Windows PowerShell, use `curl.exe` no lugar de `curl`. Para executá-la no host durante desenvolvimento, use `bun run start:dev` após configurar `DATABASE_URL` e os endpoints SQS acessíveis no host.
+
+## Configuração de ambiente
+
+O Quickstart acima cria `.env` a partir do `.env.example`. Ajuste os valores locais nesse arquivo quando as portas ou nomes padrão não estiverem disponíveis.
+
+Variáveis do `.env.example` e configurações opcionais reconhecidas pelo Compose/aplicação:
 
 | Variável | Finalidade |
 | --- | --- |
-| `APP_PORT` | Porta HTTP publicada pela aplicação. |
+| `APP_PORT` | Porta publicada no host pelo Compose; o container continua escutando em `PORT=3000`. |
 | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Credenciais e banco do PostgreSQL local. |
 | `POSTGRES_PORT` | Porta local publicada pelo PostgreSQL. |
 | `DATABASE_URL` | String de conexão usada pelos comandos executados no host. |
@@ -78,7 +98,25 @@ Variáveis do arquivo `.env.example`:
 | `SQS_DLQ` | Dead-letter queue da fila de entrada. |
 | `SQS_OUTPUT_QUEUE` | Fila FIFO de eventos publicados pela Outbox. |
 
-A aplicação também possui defaults para `PORT`, `SQS_OUTPUT_QUEUE`, parâmetros de polling, workers, leases, retry e tamanho dos lotes. Esses parâmetros opcionais estão centralizados na configuração da aplicação; o Compose define os endpoints internos necessários para a comunicação entre containers.
+`SQS_OUTPUT_QUEUE` é opcional e não está escrito no `.env.example`; Compose e aplicação usam `wager-integration-events.fifo` como default.
+
+A aplicação usa `PORT=3000` por padrão quando executada no host; no Compose, esse valor é definido explicitamente e `APP_PORT` controla apenas a porta do host. Os parâmetros operacionais opcionais relevantes e seus defaults estão na tabela abaixo. O Compose configura os endpoints internos para a comunicação entre containers.
+
+| Variável | Default no código | Efeito |
+| --- | --- | --- |
+| `MESSAGING_WORKERS_ENABLED` | habilitado quando diferente de `false` | Ativa consumer e publisher SQS. |
+| `SQS_VISIBILITY_TIMEOUT_SECONDS` | `30` | Visibilidade da mensagem durante processamento. |
+| `SQS_RECEIVE_WAIT_SECONDS` | `0` | Espera máxima por mensagem em cada polling SQS. |
+| `SQS_BATCH_SIZE` | `10` | Lote máximo recebido pelo consumer. |
+| `OUTBOX_LEASE_MS` / `OUTBOX_BATCH_SIZE` | `30000` / `10` | Lease e lote de claims da Outbox. |
+| Retry do publisher da Outbox | `1000` ms, backoff exponencial limitado a `60000` ms | Agendamento persistido após falha de publicação; limites são definidos no código, sem variável de ambiente. |
+| Retry do consumer SQS | `2^receiveCount` segundos, limitado a `60` s e ao visibility timeout | Ajusta a visibilidade para redelivery; DLQ automática após `maxReceiveCount=5` no bootstrap local. |
+| `PENDING_REFERENCE_INTERVAL_MS` | `1000` | Intervalo do worker de referências pendentes. |
+| `PENDING_REFERENCE_LEASE_MS` | `30000` | Lease de claim da pendência. |
+| `PENDING_REFERENCE_RETRY_BASE_MS` / `PENDING_REFERENCE_RETRY_MAX_MS` | `1000` / `60000` | Base e limite do backoff exponencial. |
+| `PENDING_REFERENCE_TTL_MS` | `900000` (15 min) | Prazo para resolver a referência antes da rejeição. |
+
+O consumer também aceita `SQS_SHUTDOWN_TIMEOUT_MS`; seu default é derivado do timeout de visibilidade (`max(1000, visibilityTimeoutSeconds × 1000 − 1000)`).
 
 ## Execução com Docker Compose
 
@@ -129,7 +167,75 @@ Os endpoints não exigem autenticação nesta implementação.
 - `GET /wagering/transactions/:transactionId`: consulta pelo identificador interno.
 - `GET /providers/:providerId/wagering/transactions/:externalTransactionId`: consulta pela chave externa do provedor.
 
-Os tipos aceitos são `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK`. Uma referência ainda não disponível pode resultar em `202 PENDING_REFERENCE`; uma nova operação pode retornar `201`, enquanto uma repetição idempotente retorna `200`. Erros de validação, conflito financeiro e falha temporária de infraestrutura usam os status correspondentes implementados pelos filtros HTTP.
+Os tipos aceitos são `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK`. Uma nova operação processada retorna `201`; replay idempotente retorna `200`; uma `REFUND` ou `ROLLBACK` cuja referência ainda não chegou retorna `202` com `PENDING_REFERENCE`. Essa resposta HTTP descreve o estado persistido da transação e o worker poderá retomá-la; não é uma resposta HTTP gerada pelo consumer SQS.
+
+Exemplo de submissão e resposta processada:
+
+```http
+POST /wagering/transactions HTTP/1.1
+Content-Type: application/json
+Idempotency-Key: provider-a:bet-123
+X-Correlation-Id: request-9f3a
+
+{
+  "providerId": "provider-a",
+  "externalTransactionId": "bet-123",
+  "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
+  "walletId": "0192f291-27dd-7d3f-8071-5f8685deef37",
+  "roundId": "round-987",
+  "gameId": "fortune-chimp",
+  "kind": "BET",
+  "money": { "amount": "25.00", "currency": "BRL" }
+}
+```
+
+```http
+HTTP/1.1 201 Created
+Content-Type: application/json
+
+{
+  "transactionId": "0192f298-345e-7e38-af88-e43f851a819d",
+  "providerId": "provider-a",
+  "externalTransactionId": "bet-123",
+  "walletId": "0192f291-27dd-7d3f-8071-5f8685deef37",
+  "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
+  "roundId": "round-987",
+  "gameId": "fortune-chimp",
+  "kind": "BET",
+  "money": { "amount": "25.00", "currency": "BRL" },
+  "status": "PROCESSED",
+  "idempotentReplay": false,
+  "balance": { "amount": "975.00", "currency": "BRL" }
+}
+```
+
+O mesmo `Idempotency-Key` com conteúdo financeiro diferente retorna `409 CONFLICT`; payload inválido retorna `400 INVALID_PAYLOAD`. Uma rejeição de negócio como saldo insuficiente retorna `422` e inclui o estado `REJECTED` e seu `failureCode`.
+
+Exemplo de conflito de idempotência (mensagem genérica produzida pelo filtro):
+
+```http
+HTTP/1.1 409 Conflict
+Content-Type: application/json
+
+{
+  "statusCode": 409,
+  "code": "CONFLICT",
+  "message": "Idempotency key was used with a different payload"
+}
+```
+
+| HTTP | Situação | Interpretação |
+| --- | --- | --- |
+| `200` | Consulta bem-sucedida ou replay idempotente de operação já conhecida | Consulta retorna o recurso; replay reapresenta o resultado persistido sem reaplicar o efeito. |
+| `201` | Nova transação processada, wallet criada ou pedido de reconciliação concluído | Para transação financeira, confira `status`; reconciliação informa o resultado em `consistent`/`difference`. |
+| `202` | Referência de `REFUND`/`ROLLBACK` ainda ausente | Transação persistida como `PENDING_REFERENCE`; worker tentará resolvê-la. |
+| `400` | Corpo inválido, `Idempotency-Key` ausente, cursor inválido ou limite fora da faixa | Corrija o request antes de reenviar. |
+| `404` | Wallet ou transação consultada não encontrada | O recurso não existe. |
+| `409` | Chave idempotente com payload diferente, identidade externa duplicada ou wallet já existente | Conflito com estado já persistido. |
+| `422` | Operação rejeitada por regra financeira ou referência inválida | Resultado terminal de negócio; consulte `status` e `failureCode`. |
+| `503` | Falha transitória classificada durante uma operação, ou dependência indisponível em `/health/ready` | A falha operacional classificada contém `retryable: true`; readiness retorna `status: not_ready` e identifica a dependência indisponível. |
+
+`POST /wallets/:walletId/reconciliation` retorna `201` tanto quando consistente quanto quando encontra divergência; a divergência está em `consistent`/`difference`, é observada e não é corrigida automaticamente. Erros inesperados não classificados retornam `500`.
 
 ## Mensageria SQS
 
@@ -177,7 +283,9 @@ src/
   application/       casos de uso e portas
   persistence/       PostgreSQL, TypeORM e unidade de trabalho
   messaging/         SQS, publisher, consumer e workers
-  http/              controllers, filtros e health checks
+  http/              controllers financeiros, validação e filtros
+  health.controller.ts
+  readiness.controller.ts
   observability/     logs e métricas
   database/migrations migrações PostgreSQL
 test/                testes unitários, integração e E2E
@@ -195,7 +303,7 @@ docker/              inicialização local do LocalStack
 
 ## Testes isolados de integração
 
-`bun run test:unit` executa somente testes sem infraestrutura externa. `bun run test:integration` exige `DATABASE_URL` e LocalStack acessível, cria um schema PostgreSQL e três filas FIFO exclusivas para a execução, aplica as migrations e remove somente esses recursos ao final. `bun run test:sqs` executa apenas a regressão SQS com o mesmo isolamento. `bun run test:migrations` valida apply, revert e reapply em schema isolado. A integração falha explicitamente quando as dependências ou o isolamento não estão disponíveis; nenhum teste financeiro é ignorado silenciosamente.
+`bun run test:unit` executa somente testes sem infraestrutura externa. `bun run test:integration` exige `DATABASE_URL` e LocalStack acessível, cria um schema PostgreSQL e três filas FIFO exclusivas para a execução, aplica as migrations e remove somente esses recursos ao final. `bun run test:sqs` usa o mesmo runner isolado e executa `test/sqs.regression.integration.test.ts` **e** `test/distributed-recovery.integration.test.ts`; esta última cobre recuperação distribuída além dos cenários SQS. `bun run test:migrations` valida apply, revert e reapply em schema isolado. A integração falha explicitamente quando as dependências ou o isolamento não estão disponíveis; nenhum teste financeiro é ignorado silenciosamente.
 
 ## Documentação complementar
 

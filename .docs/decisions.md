@@ -2,7 +2,9 @@
 
 ## Convenção
 
-Status possíveis para ADRs: **proposta**, **aprovada** e **substituída**. Para as pendências históricas, a tabela abaixo usa **resolvida**, **parcialmente resolvida** ou **pendente** conforme a evidência atual. O [README](../README.md) é a fonte dos requisitos; [challenge.md](challenge.md) é sua cópia fiel.
+Status possíveis para ADRs: **proposta**, **aprovada** e **substituída**. Para as pendências históricas, a tabela abaixo usa **resolvida**, **parcialmente resolvida** ou **pendente** conforme a evidência atual.
+
+Hierarquia documental atual: [.docs/challenge.md](challenge.md) contém a referência original dos requisitos do desafio; [README.md](../README.md) apresenta o projeto e seu uso; [ARCHITECTURE.md](../ARCHITECTURE.md) descreve a arquitetura e as decisões técnicas implementadas; este arquivo registra decisões arquiteturais e sua evolução. O desafio é a fonte para requisitos; README e arquitetura não o substituem.
 
 ## Estado atual e evolução das decisões
 
@@ -12,19 +14,21 @@ As ADRs abaixo preservam o histórico das etapas em que foram aprovadas. Algumas
 - A ADR-011 continua válida para os contratos HTTP e a reconciliação; a limitação de SQS foi superada pelas ADRs-012, 013, 014 e 015.
 - A ADR-012 foi expandida pela ADR-014 para separar a fila de entrada da fila de eventos de integração.
 - A ADR-016 registra a observabilidade atualmente implementada: logs estruturados, métricas em memória, correlação validada e health checks sem infraestrutura adicional.
+- As consequências de abertura de carteira nas ADRs-005 e 008 foram superadas pela implementação de `CreateWalletUseCase`: saldo inicial positivo persiste `OPENING`, crédito de ledger e eventos na mesma unidade de trabalho. Ver `src/application/use-cases/create-wallet.use-case.ts`, `src/application/messaging/enqueue-financial-events.ts`, `src/database/migrations/1710000001000-CreateFinancialPersistence.ts` e `test/financial-use-cases.integration.test.ts`.
 
 Nenhuma decisão histórica é removida. Quando uma ADR antiga disser que um componente ainda não existia, isso representa o estado daquela etapa, não o estado atual do código.
 
-## ADR-001 — README oficial como fonte de verdade
+## ADR-001 — README original como fonte de verdade (decisão histórica)
 
 - **ID:** ADR-001
-- **Status:** aprovada
+- **Status:** substituída — a hierarquia documental atual está registrada na seção Convenção acima.
 - **Data:** 2026-10-29
 - **Contexto e problema:** A organização documental não pode modificar o escopo oficial.
 - **Alternativas consideradas:** substituir o README; resumir o desafio; manter o README e criar cópia fiel.
 - **Decisão:** preservar o README integralmente e criar `challenge.md`.
 - **Justificativa:** mantém a referência oficial verificável.
 - **Consequências e trade-offs:** qualquer mudança futura do escopo exige sincronização verificável da cópia.
+- **Evolução posterior:** a referência original dos requisitos passou a ser preservada em `.docs/challenge.md`; o README atual é a documentação de utilização e visão geral do projeto. Esta ADR permanece como registro da organização documental inicial, não como hierarquia vigente.
 
 ## ADR-002 — Separar requisitos, propostas e implementação
 
@@ -89,7 +93,8 @@ A situação individual de `PEND-001` a `PEND-008` está registrada na tabela ac
 - **Alternativas consideradas:** entidades TypeORM no domínio; valores monetários em `double precision`; tabelas sem constraints e validação somente em aplicação.
 - **Decisão:** usar entidades TypeORM isoladas em `src/persistence`, mappers explícitos e contratos na camada de aplicação. Valores monetários serão `NUMERIC(20,2)` lidos como `string`, convertidos em `Money` pelas factories `rehydrate` dos agregados. A idempotência será única por `(provider_id, idempotency_key)` e a identificação externa por `(provider_id, external_transaction_id)`.
 - **Justificativa:** preserva a exatidão decimal e evita acoplamento do domínio, enquanto constraints, FK, índices e trigger de ledger protegem invariantes mesmo fora da aplicação.
-- **Consequências e trade-offs:** o limite de `NUMERIC(20,2)` é explícito; `OPENING` continua sendo responsabilidade de um caso de uso futuro. A tabela de ledger rejeita `UPDATE`/`DELETE` por trigger e só aceita inserções aritmeticamente válidas.
+- **Consequências e trade-offs (registro histórico):** o limite de `NUMERIC(20,2)` é explícito; `OPENING` continua sendo responsabilidade de um caso de uso futuro. A tabela de ledger rejeita `UPDATE`/`DELETE` por trigger e só aceita inserções aritmeticamente válidas.
+- **Estado atual da consequência sobre abertura:** superada pela implementação de `CreateWalletUseCase` e pelo schema em `src/database/migrations/1710000001000-CreateFinancialPersistence.ts`; a criação financiada é coberta em `test/financial-use-cases.integration.test.ts` e `test/messaging.integration.test.ts`.
 
 ## ADR-009 — Concorrência por wallet
 
@@ -97,9 +102,10 @@ A situação individual de `PEND-001` a `PEND-008` está registrada na tabela ac
 - **Status:** aprovada
 - **Data:** 2026-10-30
 - **Contexto e problema:** duas instâncias podem alterar a mesma carteira simultaneamente, e a unidade de concorrência exigida é `walletId`.
-- **Decisão:** os repositórios oferecem leitura com `pessimistic_write`; o caso de uso futuro deve abrir uma transação SQL, bloquear apenas a linha da wallet, aplicar o movimento no agregado e gravar wallet, transação e ledger antes do commit.
+- **Decisão (registro da etapa):** os repositórios oferecem leitura com `pessimistic_write`; o caso de uso futuro deve abrir uma transação SQL, bloquear apenas a linha da wallet, aplicar o movimento no agregado e gravar wallet, transação e ledger antes do commit.
 - **Justificativa:** o lock é distribuído pelo PostgreSQL, funciona entre processos e mantém wallets diferentes em paralelo; não há lock global em memória.
-- **Consequências e trade-offs:** o fluxo financeiro completo e retries de deadlock/timeout permanecem fora desta etapa; os chamadores devem usar o método `forUpdate` somente dentro de uma transação ativa.
+- **Consequências e trade-offs (registro histórico):** o fluxo financeiro completo e retries de deadlock/timeout permanecem fora desta etapa; os chamadores devem usar o método `forUpdate` somente dentro de uma transação ativa.
+- **Evolução posterior:** o fluxo financeiro com lock por wallet está implementado em `src/application/use-cases/process-wager-transaction.use-case.ts` e `src/persistence/unit-of-work/typeorm-financial-unit-of-work.ts`; integração entre processos é exercitada em `test/distributed-recovery.integration.test.ts`. Retry automático específico para deadlock/timeout no endpoint HTTP continua fora do fluxo.
 
 ## ADR-010 — Unidade de trabalho e idempotência dos casos de uso
 
@@ -109,7 +115,8 @@ A situação individual de `PEND-001` a `PEND-008` está registrada na tabela ac
 - **Contexto e problema:** A Etapa 10 precisa coordenar wallet, transação e ledger atomicamente, inclusive quando duas instâncias recebem a mesma operação ou quando uma referência chega fora de ordem.
 - **Decisão:** introduzir a porta `FinancialUnitOfWork` na aplicação e a implementação `TypeOrmFinancialUnitOfWork`, baseada em `DataSource.transaction`. O caso de uso bloqueia a wallet com `pessimistic_write`, consulta novamente a idempotência após o lock e trata uma violação de unicidade pós-commit tentado relendo a chave persistida. `PENDING_REFERENCE` é reprocessada pela mesma operação quando a referência aparece.
 - **Justificativa:** mantém TypeORM na infraestrutura, cobre concorrência entre processos e deixa o PostgreSQL como autoridade final de unicidade; falhas inesperadas não são repetidas automaticamente nem deixam alterações parciais.
-- **Consequências e trade-offs:** conflito de transação externa e payload divergente são erros de aplicação; retry de deadlock/timeout e integração HTTP/SQS ficam para etapas posteriores. `WIN` sem referência disponível é rejeitado quando uma referência foi informada, pois o domínio não oferece `PENDING_REFERENCE` para WIN.
+- **Consequências e trade-offs (registro histórico):** conflito de transação externa e payload divergente são erros de aplicação; retry de deadlock/timeout e integração HTTP/SQS ficam para etapas posteriores. `WIN` sem referência disponível é rejeitado quando uma referência foi informada, pois o domínio não oferece `PENDING_REFERENCE` para WIN.
+- **Evolução posterior:** HTTP e SQS foram implementados nas ADRs-011 a 015; os contratos atuais estão em `src/http` e `src/messaging/sqs`. A ausência de retry HTTP dedicado a deadlock/timeout permanece vigente; o consumer SQS faz redelivery para falhas transitórias.
 
 ## ADR-005 — Transições explícitas de Wallet e ledger
 
@@ -120,7 +127,8 @@ A situação individual de `PEND-001` a `PEND-008` está registrada na tabela ac
 - **Alternativas consideradas:** alterar a Wallet e deixar o caso de uso montar o ledger; retornar somente o novo saldo; receber uma especificação de movimento e retornar o lançamento criado.
 - **Decisão:** `Wallet.debit` e `Wallet.credit` recebem `{ id, transactionId, money, at? }`, validam moeda, sinal e saldo, criam e retornam um `WalletLedgerEntry`, e somente então aplicam a nova versão do saldo. O caso de uso/persistência posterior gravará os dois resultados na mesma transação SQL.
 - **Justificativa:** a API torna explícita a correspondência entre transição e lançamento e impede que o chamador construa um ledger divergente. A Wallet continua sendo o aggregate root; o ledger não possui operações de alteração.
-- **Consequências e trade-offs:** a criação de uma wallet não fabrica um lançamento sem `transactionId`; o caso de uso de abertura deverá criar a transação interna `OPENING` e seu ledger na transação SQL prevista pelo desafio. Movimentos de valor zero podem gerar lançamento matematicamente balanceado, mas não incrementam `version`.
+- **Consequências e trade-offs (registro histórico):** a criação de uma wallet não fabrica um lançamento sem `transactionId`; o caso de uso de abertura deverá criar a transação interna `OPENING` e seu ledger na transação SQL prevista pelo desafio. Movimentos de valor zero podem gerar lançamento matematicamente balanceado, mas não incrementam `version`.
+- **Estado atual da consequência sobre abertura:** superada por `CreateWalletUseCase`, que cria `OPENING` e o lançamento correspondente para saldo inicial positivo dentro da `FinancialUnitOfWork`; saldo zero não cria essa transação. Evidência: `src/application/use-cases/create-wallet.use-case.ts` e `test/financial-use-cases.integration.test.ts`.
 
 ## ADR-006 — Reidratação e imutabilidade temporal
 
@@ -149,7 +157,8 @@ A situação individual de `PEND-001` a `PEND-008` está registrada na tabela ac
 - **Status:** aprovada — 2026-10-30.
 - **Decisão:** controllers usam DTOs HTTP estritos e serializadores próprios; regras financeiras permanecem nos casos de uso. A paginação do ledger é cursor-based por `(createdAt,id)`, e a reconciliação é somente leitura, com divergências logadas.
 - **Justificativa:** evita acoplamento com TypeORM, mantém respostas determinísticas e não mascara inconsistências financeiras.
-- **Trade-offs:** a readiness reporta somente PostgreSQL enquanto o cliente SQS não existe; a integração SQS será adicionada em etapa posterior.
+- **Trade-offs (registro histórico):** a readiness reporta somente PostgreSQL enquanto o cliente SQS não existe; a integração SQS será adicionada em etapa posterior.
+- **Evolução posterior:** SQS foi integrado e a readiness atual consulta PostgreSQL e SQS, conforme a evolução da ADR-003 e a implementação em `src/readiness.controller.ts`.
 - **ADR-012 — Transactional Outbox e Inbox persistentes**
 
   - **Status:** aprovada
