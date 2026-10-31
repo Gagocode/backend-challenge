@@ -4,6 +4,17 @@
 
 Status possíveis: **proposta**, **aprovada** e **substituída**. O [README](../README.md) é a fonte dos requisitos; [challenge.md](challenge.md) é sua cópia fiel.
 
+## Estado atual e evolução das decisões
+
+As ADRs abaixo preservam o histórico das etapas em que foram aprovadas. Algumas consequências descrevem limitações que existiam naquele momento e foram superadas por decisões posteriores. Em particular:
+
+- A ADR-003 continua válida para TypeORM, migrações explícitas e separação entre liveness e readiness; sua referência à readiness somente PostgreSQL era uma limitação da etapa inicial.
+- A ADR-011 continua válida para os contratos HTTP e a reconciliação; a limitação de SQS foi superada pelas ADRs-012, 013, 014 e 015.
+- A ADR-012 foi expandida pela ADR-014 para separar a fila de entrada da fila de eventos de integração.
+- A ADR-016 registra a observabilidade atualmente implementada: logs estruturados, métricas em memória, correlação validada e health checks sem infraestrutura adicional.
+
+Nenhuma decisão histórica é removida. Quando uma ADR antiga disser que um componente ainda não existia, isso representa o estado daquela etapa, não o estado atual do código.
+
 ## ADR-001 — README oficial como fonte de verdade
 
 - **ID:** ADR-001

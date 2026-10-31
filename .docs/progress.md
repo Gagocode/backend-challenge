@@ -1,30 +1,53 @@
 # Diário de progresso
 
-## 2026-10-31 — Correção e auditoria complementar da Etapa 12
+## 2026-10-31 03:00:49 -03:00 — Correção e padronização da documentação do projeto
 
-**Correções implementadas:**
+**O que foi feito:**
 
-- Separada a topologia SQS: `wager-transactions.fifo` permanece entrada, `wager-transactions-dlq.fifo` permanece DLQ e `wager-integration-events.fifo` tornou-se o destino exclusivo da Outbox.
-- Consumer financeiro deixou de ACKar envelopes de integração; mensagens incompatíveis são auditadas e roteadas à DLQ antes do delete.
-- Hash HTTP/SQS passou a considerar somente o payload financeiro canônico, excluindo `messageId` e timestamps de transporte.
-- `main.ts` habilita hooks de `SIGINT`/`SIGTERM`; o receive SQS é abortável e o consumer não confirma durante shutdown.
-- Outbox ganhou renovação periódica de lease com token persistente; `markPublished`/retry só alteram o registro se ainda forem proprietários.
-- `PENDING_REFERENCE` ganhou migration reversível com tentativas, backoff, claim, lease e último erro persistentes; workers concorrentes usam claim SQL distribuído.
-- Corrigida a leitura de retornos `UPDATE ... RETURNING` do driver TypeORM/Bun, que são tuplas `[rows,rowCount]`.
+- Reconstruído o `README.md` como guia principal de apresentação, configuração, execução, endpoints, mensageria, testes e limitações reais.
+- Reposicionado o registro da Etapa 13 para o topo histórico, depois dos registros da Etapa 12 do mesmo dia, preservando seu conteúdo e sem inventar horário.
+- Mantido todo o histórico existente do `progress.md`; registros antigos sem horário confirmado continuam explicitamente sem horário.
+- Revisados `ARCHITECTURE.md` e `.docs/decisions.md` para distinguir arquitetura implementada, decisões históricas, decisões superadas e limitações atuais.
+- Conferidos scripts de `package.json`, variáveis de `.env.example`, endpoints dos controllers e links relativos da documentação.
 
-**Testes de regressão:**
+**Validação:**
 
-- Teste unitário de hash independente do ID de transporte.
-- Teste unitário de roteamento de evento de integração para DLQ e shutdown abortável.
-- PostgreSQL real: atomicidade Inbox/Outbox, corrida de Inbox, corrida de publishers, publicação lenta com lease renovado, token de lease e claims concorrentes/backoff de `PENDING_REFERENCE`.
+- `git diff --check` executado sem erros.
+- Nenhum arquivo de código, teste, dependência ou configuração de execução foi alterado.
 
-**Validação parcial:**
+**Observação cronológica:**
 
+- Este registro usa o horário real obtido do ambiente: `2026-10-31 03:00:49 -03:00`.
+- O horário exato dos registros da Etapa 13 e de alguns registros de 2026-10-31 não está confirmado no histórico disponível; as datas foram preservadas sem atribuir horário artificial.
+
+## 2026-10-31 — Etapa 13: observabilidade e métricas operacionais
+
+**O que foi feito:**
+
+- Criado `StructuredLogger`, com saída JSON em uma linha, allowlist de contexto e filtragem de payloads financeiros, credenciais, tokens e mensagens de erro livres.
+- Instrumentados recebimento HTTP, processamento/rejeição/replay financeiro, Outbox, falhas de publish, consumer SQS, redelivery, retry, DLQ, worker de referências, reconciliação e readiness.
+- Criado `MetricsService` sem dependência externa e endpoint público `GET /metrics` no formato Prometheus 0.0.4.
+- Implementadas métricas de transações por status, duplicatas, retries, DLQ explícita, conflitos de lock, outbox lag, latência de processamento e divergência de reconciliação.
+- Labels são controladas e não carregam walletId, transactionId, messageId ou valores monetários.
+- Correlation ID HTTP/SQS passou a ser validado e propagado pelo caso de uso, Outbox, Inbox, publisher, consumer e worker; SQS usa messageId somente como fallback.
+- Corrigido o worker de referências para persistir o próximo retry/backoff quando a referência ainda não existe, sem contar esse retry como nova duplicata financeira.
+- Readiness permanece público e separado: liveness não acessa dependências; readiness verifica PostgreSQL e SQS e retorna 503 sem derrubar o processo.
+
+**Testes e validação:**
+
+- Adicionado `test/observability.test.ts`, cobrindo formato JSON, correlation ID, ausência de dados sensíveis, contadores, labels, lag, latência, readiness com dependências disponíveis/indisponíveis e liveness independente.
 - `bun run typecheck` aprovado.
-- Testes messaging unitários e de integração PostgreSQL real: 10 pass, 0 fail na rodada corrigida (3 regressões unitárias + 7 testes de persistência/concorrência).
-- Nenhum commit, merge ou remoção de volume foi executado.
+- `bun run build` aprovado.
+- `bun test` sem dependências reais revelou apenas o comportamento ambiental esperado: E2E exige PostgreSQL; os testes unitários novos passaram.
+- PostgreSQL real e LocalStack reais foram iniciados pelo Compose sem remover volumes; migrations pendentes: nenhuma.
+- Suíte real com PostgreSQL/LocalStack: 71 pass, 1 falha inicial por dois consumidores concorrendo na mesma fila (container app existente); após parar temporariamente somente esse container, `test/sqs.regression.integration.test.ts`: 1 pass.
+- `git diff --check` aprovado.
 
-**Pendências desta auditoria:** validar a nova fila no LocalStack, repetir a suíte completa e executar a auditoria final de redelivery/ACK com a aplicação reconstruída.
+**Limitações conhecidas:**
+
+- A métrica de DLQ contabiliza envios explícitos da aplicação; o redrive automático do SQS precisa de observação externa.
+- As métricas ficam em memória e reiniciam com o processo; não há Prometheus/Grafana/OTel por não serem necessários ao escopo.
+- O `README.md` da raiz estava vazio no checkout anterior; esta correção o reconstrói como documentação principal.
 
 ## 2026-10-31 — Validação final da correção da auditoria
 
@@ -35,6 +58,34 @@
 - Normalização monetária do hash foi reforçada para que representações equivalentes como `10.0` e `10.00` tenham o mesmo hash.
 - App Compose foi reconstruído e reiniciado com sucesso; volumes e banco principal foram preservados. Nenhum commit ou merge foi criado.
 
+## 2026-10-30 — Fechamento da validação da Etapa 12
+
+- `bun run typecheck`, `bun run build`, `bun test` com PostgreSQL real e `git diff --check` aprovados.
+- Resultado final: 60 testes pass, 0 fail e 242 expectativas.
+- App final reconstruído e healthy; readiness confirmou PostgreSQL/SQS `up`; nenhum commit, merge ou alteração de `develop`/`main` foi feito.
+## 2026-10-30 — Etapa 12: Transactional Outbox, Inbox e SQS
+
+**O que foi feito:**
+
+- Adicionado `@aws-sdk/client-sqs`, readiness SQS e workers `OutboxPublisher`/`WagerTransactionConsumer` com shutdown pelo ciclo de vida NestJS.
+- Criadas entidades Inbox/Outbox e migration reversível `1710000002000-CreateMessagingPersistence`, com JSONB, índices, constraints, leases, tentativas, falhas e unicidade persistente.
+- Criados eventos versionados `WagerTransactionProcessed`, `WagerTransactionRejected`, `WalletBalanceChanged` e `WagerTransactionPendingReference`.
+- Integrada a Outbox à mesma unidade SQL dos casos de uso financeiros, sem serializar entidades ORM ou instâncias `Money`; `LOSS` também produz evento processado.
+- Implementados claim distribuído com `FOR UPDATE SKIP LOCKED`, recuperação de leases, backoff de publicação e Inbox com `ON CONFLICT DO NOTHING` + `FOR UPDATE`.
+- Consumer reutiliza `ProcessWagerTransactionUseCase`, confirma SQS apenas depois do commit, diferencia terminal/transitório e encaminha mensagens inválidas à DLQ.
+- Adicionados testes de eventos e integração PostgreSQL para atomicidade, rollback e concorrência Inbox.
+
+**Validação real:**
+
+- PostgreSQL e LocalStack reais ficaram saudáveis; migration aplicada e tabelas `inbox_messages`/`outbox_messages` confirmadas.
+- Readiness retornou PostgreSQL e SQS `up`; FIFO confirmou `VisibilityTimeout=30`, `ReceiveMessageWaitTimeSeconds=0` e redrive `maxReceiveCount=5`.
+- Publisher real marcou eventos com `published_at` após publicação; claim foi corrigido após auditoria do retorno SQL.
+- Mensagem SQS válida processou Inbox, transação e saldo real (`100.00` → `75.00`); mensagens inválidas foram auditadas como `FAILED` e roteadas à DLQ.
+- `bun run typecheck`, `bun run build` e testes messaging adicionais passaram; a suíte completa com PostgreSQL real será repetida na validação final.
+
+**Limitação documentada:**
+
+- O README define somente a FIFO de wagering e sua DLQ, sem fila de eventos de saída. Para não inventar uma topologia, eventos Outbox usam a FIFO declarada e o consumer ACKa envelopes `eventType` sem processá-los financeiramente; uma fila pub/sub separada exige decisão contratual.
 ## 2026-10-30 — Complemento Etapa 11: suíte E2E HTTP automatizada
 
 **O que foi feito:**
@@ -49,6 +100,109 @@
 
 - `bun test test/http.e2e.test.ts` → 10 pass, 0 fail, 52 expectativas, contra PostgreSQL real e processo NestJS real.
 - O cenário de falha de infraestrutura valida falha HTTP de dependência inalcançável; o comportamento de readiness com PostgreSQL indisponível permanece coberto pelo teste do controller, sem parar o serviço compartilhado nem apagar dados.
+
+## 2026-10-30 — Etapa 11: API HTTP e integração dos casos de uso
+
+**O que foi feito:**
+
+- Implementados `POST/GET /wallets`, ledger por cursor opaco, consultas de transações interna/externa, submissão de wagering e reconciliação.
+- Criados contratos/serializadores HTTP, validação estrita de propriedades, UUIDs, enums e Money como string decimal.
+- Integrados `CreateWalletUseCase`, `ProcessWagerTransactionUseCase` e novo `ReconcileWalletUseCase` por DI do NestJS.
+- Adicionado filtro centralizado de erros, incluindo conflito, inexistência, rejeição de negócio, pendência de referência e indisponibilidade de infraestrutura.
+- Readiness PostgreSQL foi preservada; SQS permanece explicitamente não verificado por não haver integração nesta etapa.
+
+**Validação:**
+
+- `bun run typecheck`, `bun run build` e `git diff --check` aprovados.
+- `bun test`: 32 aprovados e 17 testes PostgreSQL ignorados quando `DATABASE_URL` não estava definido.
+- Docker Compose/PostgreSQL/LocalStack iniciados; migrações já aplicadas; aplicação reconstruída e saudável.
+- Fluxo HTTP real validado: criação de wallet, BET processada e saldo atualizado de `100.00` para `75.00`, além de liveness/readiness `200`.
+
+**Limitações e próximos passos:**
+
+- Não há cliente SQS nesta etapa; readiness não simula uma verificação positiva de SQS.
+- Testes E2E automatizados completos devem ser executados no ambiente CI com Docker e incluídos na próxima rodada de endurecimento da API; consumer, inbox/outbox, retry/DLQ e autenticação permanecem fora do escopo.
+
+## 2026-10-30 14:17:11 -03:00 — Etapa 10: casos de uso e orquestração financeira
+
+**O que foi feito:**
+
+- Criada a porta `FinancialUnitOfWork` e a implementação `TypeOrmFinancialUnitOfWork`, usando `DataSource.transaction` e os repositórios com o mesmo `EntityManager` transacional.
+- Implementado `CreateWalletUseCase`: wallet vazia sem abertura; wallet financiada com `OPENING` e `CREDIT` no ledger na mesma transação; conflitos de player/moeda tratados sem confiar apenas no pre-check.
+- Implementado `ProcessWagerTransactionUseCase` para `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK`.
+- Aplicado lock pessimista da wallet durante a operação, validação de player/moeda, transições de domínio, persistência atômica e rejeições auditáveis sem ledger.
+- Implementada idempotência por chave/payload, tratamento de corrida de unicidade PostgreSQL, conflito de payload e replay sem novo lançamento.
+- Implementado reprocessamento de `PENDING_REFERENCE` quando a referência passa a existir.
+- Atualizados os contratos para consultas de transação com `FOR UPDATE`.
+- Criados 10 testes de integração adicionais contra PostgreSQL real cobrindo criação, `OPENING`, rollback, todas as operações, idempotência, reversões, referências fora de ordem e concorrência.
+- Atualizados `ARCHITECTURE.md` e `.docs/decisions.md` com a unidade de trabalho, ordem dos locks, atomicidade e política de idempotência.
+
+**Ambiguidade registrada:**
+
+- O domínio existente só permite `PENDING_REFERENCE` para `REFUND` e `ROLLBACK`; `WIN` com referência informada e ausente é rejeitado como `REFERENCE_NOT_FOUND`, preservando o contrato atual sem inventar uma nova transição.
+
+**Validação real:**
+
+- `bun test test/financial-use-cases.integration.test.ts` → 10 pass, 0 fail, 40 expectativas, usando PostgreSQL do Docker Compose.
+- `bun run typecheck` → aprovado.
+- `bun run build` → aprovado.
+- `bun test` → 45 pass, 0 fail, 177 expectativas, 0 skipped.
+- `git diff --check` → aprovado.
+
+**Escopo preservado:** não foram implementados controllers HTTP, consumer SQS, Inbox, Outbox, publicação de eventos, reconciliação, observabilidade avançada ou autenticação. Nenhuma migração foi necessária.
+
+## 2026-10-30 14:02:17 -03:00 — Auditoria e validação final da Etapa 9
+
+**Auditoria e correções:**
+
+- Confirmada a causa dos testes anteriormente ignorados: `DATABASE_URL` ausente acionava `describe.skip` na suíte de integração.
+- Confirmado que o Docker Engine/Desktop e PostgreSQL 16 do Compose estavam acessíveis e healthy; os testes usaram `postgresql://wager:...@localhost:5432/wager`.
+- Identificado e corrigido o `afterAll` da integração, que desfazia migrações do banco compartilhado. A suíte agora apenas encerra a conexão, preservando dados e schema.
+- Identificados identificadores fixos que tornavam a suíte não repetível após a primeira execução; external transaction IDs e idempotency keys de constraint passaram a ser únicos por execução.
+- Adicionada cobertura real para FK de referência, unicidade de idempotência, trigger de aritmética do ledger e bloqueio pessimista por wallet em duas transações SQL concorrentes.
+
+**Validação PostgreSQL real:**
+
+- `docker compose up -d postgres` e `docker compose ps` → PostgreSQL healthy, sem remoção de volumes.
+- `bun run migration:run` no banco principal → aplicadas as duas migrações pendentes.
+- Inspeção SQL → confirmadas as três tabelas financeiras, 16 índices, 25 constraints e os triggers `wallet_ledger_entries_arithmetic` e `wallet_ledger_entries_immutable`.
+- Banco isolado `wager_migration_validation` → `migration:run`, `migration:revert` e `migration:run` executados com sucesso; reaplicação restaurou as tabelas financeiras.
+- Teste de integração dedicado → 3 pass, 0 fail, 16 expectativas.
+- Suíte completa `bun test` com `DATABASE_URL` real → 35 pass, 0 fail, 137 expectativas, 0 skipped.
+
+**Validação final:**
+
+- `bun run typecheck` → aprovado.
+- `bun run build` → aprovado.
+- `git diff --check` → aprovado; somente aviso informativo de conversão LF/CRLF.
+
+**Resultado:**
+
+A persistência financeira da Etapa 9 foi validada contra PostgreSQL real. Não foram implementados API HTTP, processamento completo de apostas, Inbox, Outbox ou SQS. O banco isolado de validação foi preservado para auditoria; nenhum volume ou dado do banco principal foi removido.
+
+## 2026-10-30 13:52:21 -03:00 — Etapa 9: persistência financeira PostgreSQL e TypeORM
+
+**O que foi feito:**
+
+- Criadas as entidades TypeORM isoladas `WalletEntity`, `WagerTransactionEntity` e `WalletLedgerEntryEntity`.
+- Criada a migração reversível `CreateFinancialPersistence1710000001000` para wallets, transações e ledger, com UUIDs, NUMERIC(20,2), constraints, FKs, índices, unicidades, trigger de imutabilidade e validação aritmética.
+- Criados mappers explícitos com `Money` como string decimal e reidratação pelas factories do domínio.
+- Criados contratos de repositório na camada de aplicação e implementações TypeORM para wallet, transação, referências externas/status e ledger.
+- Preparado lock pessimista por `walletId` para transações SQL futuras; nenhum lock global em memória foi criado.
+- Criado teste de integração que usa `DataSource` real quando `DATABASE_URL` está presente, cobrindo persistência/reidratação, precisão, unicidade, FK, saldo negativo e imutabilidade.
+- Atualizados `ARCHITECTURE.md` e `.docs/decisions.md` com schema, mapeamento, concorrência e trade-offs.
+
+**Validação real:**
+
+- `bun run typecheck` → aprovado.
+- `bun run build` → aprovado.
+- `bun test` → 32 aprovados, 4 ignorados por ausência de `DATABASE_URL`; não é aprovação da integração PostgreSQL.
+- `docker compose up -d postgres` → não executado: Docker Engine indisponível no ambiente (`docker_engine` não encontrado).
+- Migração e teste de integração contra PostgreSQL real → pendentes pela indisponibilidade do Docker.
+
+**Escopo preservado:** não foram implementados processamento completo de apostas, controllers, Inbox, Outbox ou consumidor SQS.
+
+**Pendências:** iniciar o Docker/PostgreSQL e executar o teste de integração, `migration:run`, `migration:revert` e a validação final completa.
 
 ## 2026-10-30 10:01:55 -03:00 — Domínio WagerTransaction
 
@@ -316,163 +470,3 @@ O diário incremental e a regra metodológica foram atualizados. A implementaç�
 **Próximos passos:**
 
 Registrar cada nova etapa relevante no início deste arquivo antes de encerrar a etapa, incluindo arquivos afetados, validações reais e pendências.
-
-## 2026-10-30 13:52:21 -03:00 — Etapa 9: persistência financeira PostgreSQL e TypeORM
-
-**O que foi feito:**
-
-- Criadas as entidades TypeORM isoladas `WalletEntity`, `WagerTransactionEntity` e `WalletLedgerEntryEntity`.
-- Criada a migração reversível `CreateFinancialPersistence1710000001000` para wallets, transações e ledger, com UUIDs, NUMERIC(20,2), constraints, FKs, índices, unicidades, trigger de imutabilidade e validação aritmética.
-- Criados mappers explícitos com `Money` como string decimal e reidratação pelas factories do domínio.
-- Criados contratos de repositório na camada de aplicação e implementações TypeORM para wallet, transação, referências externas/status e ledger.
-- Preparado lock pessimista por `walletId` para transações SQL futuras; nenhum lock global em memória foi criado.
-- Criado teste de integração que usa `DataSource` real quando `DATABASE_URL` está presente, cobrindo persistência/reidratação, precisão, unicidade, FK, saldo negativo e imutabilidade.
-- Atualizados `ARCHITECTURE.md` e `.docs/decisions.md` com schema, mapeamento, concorrência e trade-offs.
-
-**Validação real:**
-
-- `bun run typecheck` → aprovado.
-- `bun run build` → aprovado.
-- `bun test` → 32 aprovados, 4 ignorados por ausência de `DATABASE_URL`; não é aprovação da integração PostgreSQL.
-- `docker compose up -d postgres` → não executado: Docker Engine indisponível no ambiente (`docker_engine` não encontrado).
-- Migração e teste de integração contra PostgreSQL real → pendentes pela indisponibilidade do Docker.
-
-**Escopo preservado:** não foram implementados processamento completo de apostas, controllers, Inbox, Outbox ou consumidor SQS.
-
-**Pendências:** iniciar o Docker/PostgreSQL e executar o teste de integração, `migration:run`, `migration:revert` e a validação final completa.
-
-## 2026-10-30 14:02:17 -03:00 — Auditoria e validação final da Etapa 9
-
-**Auditoria e correções:**
-
-- Confirmada a causa dos testes anteriormente ignorados: `DATABASE_URL` ausente acionava `describe.skip` na suíte de integração.
-- Confirmado que o Docker Engine/Desktop e PostgreSQL 16 do Compose estavam acessíveis e healthy; os testes usaram `postgresql://wager:...@localhost:5432/wager`.
-- Identificado e corrigido o `afterAll` da integração, que desfazia migrações do banco compartilhado. A suíte agora apenas encerra a conexão, preservando dados e schema.
-- Identificados identificadores fixos que tornavam a suíte não repetível após a primeira execução; external transaction IDs e idempotency keys de constraint passaram a ser únicos por execução.
-- Adicionada cobertura real para FK de referência, unicidade de idempotência, trigger de aritmética do ledger e bloqueio pessimista por wallet em duas transações SQL concorrentes.
-
-**Validação PostgreSQL real:**
-
-- `docker compose up -d postgres` e `docker compose ps` → PostgreSQL healthy, sem remoção de volumes.
-- `bun run migration:run` no banco principal → aplicadas as duas migrações pendentes.
-- Inspeção SQL → confirmadas as três tabelas financeiras, 16 índices, 25 constraints e os triggers `wallet_ledger_entries_arithmetic` e `wallet_ledger_entries_immutable`.
-- Banco isolado `wager_migration_validation` → `migration:run`, `migration:revert` e `migration:run` executados com sucesso; reaplicação restaurou as tabelas financeiras.
-- Teste de integração dedicado → 3 pass, 0 fail, 16 expectativas.
-- Suíte completa `bun test` com `DATABASE_URL` real → 35 pass, 0 fail, 137 expectativas, 0 skipped.
-
-**Validação final:**
-
-- `bun run typecheck` → aprovado.
-- `bun run build` → aprovado.
-- `git diff --check` → aprovado; somente aviso informativo de conversão LF/CRLF.
-
-**Resultado:**
-
-A persistência financeira da Etapa 9 foi validada contra PostgreSQL real. Não foram implementados API HTTP, processamento completo de apostas, Inbox, Outbox ou SQS. O banco isolado de validação foi preservado para auditoria; nenhum volume ou dado do banco principal foi removido.
-
-## 2026-10-30 14:17:11 -03:00 — Etapa 10: casos de uso e orquestração financeira
-
-**O que foi feito:**
-
-- Criada a porta `FinancialUnitOfWork` e a implementação `TypeOrmFinancialUnitOfWork`, usando `DataSource.transaction` e os repositórios com o mesmo `EntityManager` transacional.
-- Implementado `CreateWalletUseCase`: wallet vazia sem abertura; wallet financiada com `OPENING` e `CREDIT` no ledger na mesma transação; conflitos de player/moeda tratados sem confiar apenas no pre-check.
-- Implementado `ProcessWagerTransactionUseCase` para `BET`, `WIN`, `LOSS`, `REFUND` e `ROLLBACK`.
-- Aplicado lock pessimista da wallet durante a operação, validação de player/moeda, transições de domínio, persistência atômica e rejeições auditáveis sem ledger.
-- Implementada idempotência por chave/payload, tratamento de corrida de unicidade PostgreSQL, conflito de payload e replay sem novo lançamento.
-- Implementado reprocessamento de `PENDING_REFERENCE` quando a referência passa a existir.
-- Atualizados os contratos para consultas de transação com `FOR UPDATE`.
-- Criados 10 testes de integração adicionais contra PostgreSQL real cobrindo criação, `OPENING`, rollback, todas as operações, idempotência, reversões, referências fora de ordem e concorrência.
-- Atualizados `ARCHITECTURE.md` e `.docs/decisions.md` com a unidade de trabalho, ordem dos locks, atomicidade e política de idempotência.
-
-**Ambiguidade registrada:**
-
-- O domínio existente só permite `PENDING_REFERENCE` para `REFUND` e `ROLLBACK`; `WIN` com referência informada e ausente é rejeitado como `REFERENCE_NOT_FOUND`, preservando o contrato atual sem inventar uma nova transição.
-
-**Validação real:**
-
-- `bun test test/financial-use-cases.integration.test.ts` → 10 pass, 0 fail, 40 expectativas, usando PostgreSQL do Docker Compose.
-- `bun run typecheck` → aprovado.
-- `bun run build` → aprovado.
-- `bun test` → 45 pass, 0 fail, 177 expectativas, 0 skipped.
-- `git diff --check` → aprovado.
-
-**Escopo preservado:** não foram implementados controllers HTTP, consumer SQS, Inbox, Outbox, publicação de eventos, reconciliação, observabilidade avançada ou autenticação. Nenhuma migração foi necessária.
-
-## 2026-10-30 — Etapa 11: API HTTP e integração dos casos de uso
-
-**O que foi feito:**
-
-- Implementados `POST/GET /wallets`, ledger por cursor opaco, consultas de transações interna/externa, submissão de wagering e reconciliação.
-- Criados contratos/serializadores HTTP, validação estrita de propriedades, UUIDs, enums e Money como string decimal.
-- Integrados `CreateWalletUseCase`, `ProcessWagerTransactionUseCase` e novo `ReconcileWalletUseCase` por DI do NestJS.
-- Adicionado filtro centralizado de erros, incluindo conflito, inexistência, rejeição de negócio, pendência de referência e indisponibilidade de infraestrutura.
-- Readiness PostgreSQL foi preservada; SQS permanece explicitamente não verificado por não haver integração nesta etapa.
-
-**Validação:**
-
-- `bun run typecheck`, `bun run build` e `git diff --check` aprovados.
-- `bun test`: 32 aprovados e 17 testes PostgreSQL ignorados quando `DATABASE_URL` não estava definido.
-- Docker Compose/PostgreSQL/LocalStack iniciados; migrações já aplicadas; aplicação reconstruída e saudável.
-- Fluxo HTTP real validado: criação de wallet, BET processada e saldo atualizado de `100.00` para `75.00`, além de liveness/readiness `200`.
-
-**Limitações e próximos passos:**
-
-- Não há cliente SQS nesta etapa; readiness não simula uma verificação positiva de SQS.
-- Testes E2E automatizados completos devem ser executados no ambiente CI com Docker e incluídos na próxima rodada de endurecimento da API; consumer, inbox/outbox, retry/DLQ e autenticação permanecem fora do escopo.
-
-## 2026-10-30 — Etapa 12: Transactional Outbox, Inbox e SQS
-
-**O que foi feito:**
-
-- Adicionado `@aws-sdk/client-sqs`, readiness SQS e workers `OutboxPublisher`/`WagerTransactionConsumer` com shutdown pelo ciclo de vida NestJS.
-- Criadas entidades Inbox/Outbox e migration reversível `1710000002000-CreateMessagingPersistence`, com JSONB, índices, constraints, leases, tentativas, falhas e unicidade persistente.
-- Criados eventos versionados `WagerTransactionProcessed`, `WagerTransactionRejected`, `WalletBalanceChanged` e `WagerTransactionPendingReference`.
-- Integrada a Outbox à mesma unidade SQL dos casos de uso financeiros, sem serializar entidades ORM ou instâncias `Money`; `LOSS` também produz evento processado.
-- Implementados claim distribuído com `FOR UPDATE SKIP LOCKED`, recuperação de leases, backoff de publicação e Inbox com `ON CONFLICT DO NOTHING` + `FOR UPDATE`.
-- Consumer reutiliza `ProcessWagerTransactionUseCase`, confirma SQS apenas depois do commit, diferencia terminal/transitório e encaminha mensagens inválidas à DLQ.
-- Adicionados testes de eventos e integração PostgreSQL para atomicidade, rollback e concorrência Inbox.
-
-**Validação real:**
-
-- PostgreSQL e LocalStack reais ficaram saudáveis; migration aplicada e tabelas `inbox_messages`/`outbox_messages` confirmadas.
-- Readiness retornou PostgreSQL e SQS `up`; FIFO confirmou `VisibilityTimeout=30`, `ReceiveMessageWaitTimeSeconds=0` e redrive `maxReceiveCount=5`.
-- Publisher real marcou eventos com `published_at` após publicação; claim foi corrigido após auditoria do retorno SQL.
-- Mensagem SQS válida processou Inbox, transação e saldo real (`100.00` → `75.00`); mensagens inválidas foram auditadas como `FAILED` e roteadas à DLQ.
-- `bun run typecheck`, `bun run build` e testes messaging adicionais passaram; a suíte completa com PostgreSQL real será repetida na validação final.
-
-**Limitação documentada:**
-
-- O README define somente a FIFO de wagering e sua DLQ, sem fila de eventos de saída. Para não inventar uma topologia, eventos Outbox usam a FIFO declarada e o consumer ACKa envelopes `eventType` sem processá-los financeiramente; uma fila pub/sub separada exige decisão contratual.
-## 2026-10-30 — Fechamento da validação da Etapa 12
-
-- `bun run typecheck`, `bun run build`, `bun test` com PostgreSQL real e `git diff --check` aprovados.
-- Resultado final: 60 testes pass, 0 fail e 242 expectativas.
-- App final reconstruído e healthy; readiness confirmou PostgreSQL/SQS `up`; nenhum commit, merge ou alteração de `develop`/`main` foi feito.
-## 2026-10-31 - Etapa 13: observabilidade e metricas operacionais
-
-**O que foi feito:**
-
-- Criado `StructuredLogger`, com saida JSON em uma linha, allowlist de contexto e filtragem de payloads financeiros, credenciais, tokens e mensagens de erro livres.
-- Instrumentados recebimento HTTP, processamento/rejeicao/replay financeiro, Outbox, falhas de publish, consumer SQS, redelivery, retry, DLQ, worker de referencias, reconciliacao e readiness.
-- Criado `MetricsService` sem dependencia externa e endpoint publico `GET /metrics` no formato Prometheus 0.0.4.
-- Implementadas metricas de transacoes por status, duplicatas, retries, DLQ explicita, conflitos de lock, outbox lag, latencia de processamento e divergencia de reconciliacao.
-- Labels sao controladas e nao carregam walletId, transactionId, messageId ou valores monetarios.
-- Correlation ID HTTP/SQS passou a ser validado e propagado pelo caso de uso, Outbox, Inbox, publisher, consumer e worker; SQS usa messageId somente como fallback.
-- Corrigido o worker de referencias para persistir o proximo retry/backoff quando a referencia ainda nao existe, sem contar esse retry como nova duplicata financeira.
-- Readiness permanece publico e separado: liveness nao acessa dependencias; readiness verifica PostgreSQL e SQS e retorna 503 sem derrubar o processo.
-
-**Testes e validacao:**
-
-- Adicionado `test/observability.test.ts`, cobrindo formato JSON, correlation ID, ausencia de dados sensiveis, contadores, labels, lag, latencia, readiness com dependencias disponiveis/indisponiveis e liveness independente.
-- `bun run typecheck` aprovado.
-- `bun run build` aprovado.
-- `bun test` sem dependencias reais revelou apenas o comportamento ambiental esperado: E2E exige PostgreSQL; os testes unitarios novos passaram.
-- PostgreSQL real e LocalStack reais foram iniciados pelo Compose sem remover volumes; migrations pendentes: nenhuma.
-- Suite real com PostgreSQL/LocalStack: 71 pass, 1 falha inicial por dois consumidores concorrendo na mesma fila (container app existente); apos parar temporariamente somente esse container, `test/sqs.regression.integration.test.ts`: 1 pass.
-- `git diff --check` aprovado.
-
-**Limitacoes conhecidas:**
-
-- A metrica de DLQ contabiliza envios explicitos da aplicacao; o redrive automatico do SQS precisa de observacao externa.
-- As metricas ficam em memoria e reiniciam com o processo; nao ha Prometheus/Grafana/OTel por nao serem necessarios ao escopo.
-- O `README.md` da raiz esta vazio neste checkout; a secao 12 foi auditada em `.docs/challenge.md`, que e a copia disponivel dos requisitos.
