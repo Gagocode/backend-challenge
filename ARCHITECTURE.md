@@ -134,7 +134,7 @@ Parâmetros de polling, batch, leases, retry, TTL e workers são configuráveis 
 
 ### Testes de integração
 
-O runner de integração exige PostgreSQL e LocalStack reais. Cada execução cria um schema PostgreSQL com `search_path` exclusivo, migrations versionadas e filas FIFO próprias (entrada, DLQ e saída). Ao terminar, remove somente o schema e as filas criados pelo runner; volumes, banco público e filas de desenvolvimento não são tocados. A ausência de `DATABASE_URL`, `TEST_DATABASE_SCHEMA` ou das filas isoladas causa falha explícita. Isso impede que um publisher ou consumer externo compartilhe a Outbox do teste.
+O runner de integração exige PostgreSQL e LocalStack reais. Cada execução cria um schema PostgreSQL com `search_path` exclusivo, passa esse schema por `TEST_DATABASE_SCHEMA`, aplica migrations versionadas e cria filas FIFO próprias (entrada, DLQ e saída). Ao terminar, remove somente o schema e as filas criados pelo runner; volumes, banco público e filas de desenvolvimento não são tocados. A ausência de `DATABASE_URL` ou das dependências de SQS causa falha explícita. Isso impede que um publisher ou consumer externo compartilhe a Outbox do teste.
 
 ## Evolução documentada
 

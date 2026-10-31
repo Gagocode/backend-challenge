@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
 import { createDatabaseOptions } from '../src/database/database.config';
-import { FinancialConflictError } from '../src/application/financial-errors';
+import { FinancialConflictError, InvalidFinancialOperationError } from '../src/application/financial-errors';
 import { CreateWalletUseCase } from '../src/application/use-cases/create-wallet.use-case';
 import { ProcessWagerTransactionUseCase, type ProcessWagerTransactionCommand } from '../src/application/use-cases/process-wager-transaction.use-case';
 import { TypeOrmFinancialUnitOfWork } from '../src/persistence/unit-of-work/typeorm-financial-unit-of-work';
@@ -85,6 +85,34 @@ describe('financial application use cases against real PostgreSQL', () => {
     expect(rejected.transaction.failureCode).toBe(FailureCode.InsufficientBalance);
     expect(restored?.balance.toString()).toBe('20.00');
     expect(entries.filter((entry) => entry.direction === 'DEBIT')).toHaveLength(1);
+  });
+
+  test('rejects a transaction whose player does not own the wallet without persistence or financial side effects', async () => {
+    const wallet = await createWallet.execute({ id: randomUUID(), playerId: randomUUID(), initialBalance: brl('50.00') });
+    const invalid = command(wallet.id, randomUUID(), WagerTransactionKind.Bet, '5.00');
+    const transactions = new TypeOrmWagerTransactionRepository(dataSource.manager);
+    const ledger = new TypeOrmWalletLedgerEntryRepository(dataSource.manager);
+    const beforeEntries = await ledger.findByWalletId(wallet.id);
+
+    await expect(processTransaction.execute(invalid)).rejects.toBeInstanceOf(InvalidFinancialOperationError);
+
+    expect(await transactions.findByProviderAndExternalId(invalid.providerId, invalid.externalTransactionId)).toBeUndefined();
+    expect(await ledger.findByWalletId(wallet.id)).toHaveLength(beforeEntries.length);
+    expect((await new TypeOrmWalletRepository(dataSource.manager).findById(wallet.id))?.balance.toString()).toBe('50.00');
+  });
+
+  test('rejects a transaction with a currency different from the wallet without persistence or financial side effects', async () => {
+    const wallet = await createWallet.execute({ id: randomUUID(), playerId: randomUUID(), initialBalance: brl('50.00') });
+    const invalid = { ...command(wallet.id, wallet.playerId, WagerTransactionKind.Bet, '5.00'), money: Money.from({ amount: '5.00', currency: 'USD' }) };
+    const transactions = new TypeOrmWagerTransactionRepository(dataSource.manager);
+    const ledger = new TypeOrmWalletLedgerEntryRepository(dataSource.manager);
+    const beforeEntries = await ledger.findByWalletId(wallet.id);
+
+    await expect(processTransaction.execute(invalid)).rejects.toBeInstanceOf(InvalidFinancialOperationError);
+
+    expect(await transactions.findByProviderAndExternalId(invalid.providerId, invalid.externalTransactionId)).toBeUndefined();
+    expect(await ledger.findByWalletId(wallet.id)).toHaveLength(beforeEntries.length);
+    expect((await new TypeOrmWalletRepository(dataSource.manager).findById(wallet.id))?.balance.toString()).toBe('50.00');
   });
 
   test('processes WIN and LOSS according to their balance effects', async () => {

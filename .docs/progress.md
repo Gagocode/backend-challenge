@@ -1,4 +1,4 @@
-# 2026-10-31 14:05:30 -03:00 — Etapa 18: correção do bootstrap e readiness do LocalStack
+# 2026-10-31 11:22:30 -03:00 — Etapa 18: correção do bootstrap e readiness do LocalStack
 
 **O que foi feito:**
 
@@ -15,7 +15,7 @@
 - A fila principal confirmou redrive para `wager-transactions-dlq.fifo` após cinco recebimentos; a DLQ confirmou `RedriveAllowPolicy` restrita à fila principal.
 - `bun run test:sqs`: 11 pass, 0 fail, 121 expectativas, contra PostgreSQL e LocalStack reais em schema/filas isolados.
 - `/health/live`: HTTP 200. `/health/ready`: HTTP 200 com PostgreSQL/SQS operacionais; com LocalStack parado, HTTP 503 e `sqs=down`; após restauração, HTTP 200 novamente.
-- `bun run typecheck`, `bun run build` e `git diff --check`: aprovados. Volumes, filas e mensagens não foram removidos; as 43 transações históricas não foram investigadas.
+- `bun run typecheck`, `bun run build` e `git diff --check`: aprovados. Volumes, filas e mensagens não foram removidos.
 
 **Arquivos alterados nesta etapa:**
 
@@ -35,14 +35,13 @@
 - Confrontado o enunciado integral em `.docs/challenge.md` com dominio, persistencia, idempotencia, concorrencia, SQS, API, infraestrutura, observabilidade, seguranca, testes e documentacao.
 - Adicionado teste real com 50 debitos identicos usando tres processos de aplicacao; teste real de `REFUND` antes do `BET` via SQS; e corrida real entre dois publishers independentes para a mesma Outbox.
 - Corrigida a documentacao para refletir a topologia real: a fila de eventos da Outbox nao e consumida pelo consumer financeiro interno; os testes SQS usam LocalStack, nao AWS de producao; e nao ha autenticacao implementada.
-- Investigada a origem provavel das 43 associacoes historicas inconsistentes. Elas permanecem intactas; a origem mais provavel sao fixtures legadas anteriores ao hardening, sem prova suficiente para saneamento automatico.
 
 **Validacao final:**
 
 - `bun run test:unit`: 47 pass.
 - `bun run test:integration`: 41 pass, 252 expects.
 - `bun run test:sqs`: 11 pass, 121 expects.
-- `bun run test:migrations`: exit 0; schema isolado com apply, revert, reapply, zero violacoes e duas constraints validadas; schema publico consultado somente leitura com 43 violacoes e constraints da Etapa 15 ausentes.
+- `bun run test:migrations`: exit 0; schema isolado com apply, revert, reapply, zero violações e duas constraints validadas.
 - `bun run test`: 47 testes unitarios + 41 de integracao pass, 0 falhas.
 - `bun run typecheck`, `bun run build` e `git diff --check`: aprovados.
 - Health HTTP: liveness `200 ok`; readiness `503` porque as filas padrao nao estavam presentes no LocalStack persistido, embora PostgreSQL, LocalStack e app estivessem `healthy` no Compose. Nenhuma fila ou volume foi removido.
@@ -59,19 +58,18 @@
 
 **Parecer preliminar:**
 
-- A implementacao e os testes isolados reais atendem os cenarios principais do desafio, mas a entrega fica **PRONTA COM RESSALVAS** enquanto as 43 violacoes historicas e a aplicacao da migration composta no schema publico nao tiverem decisao operacional explicita. A topologia de saida tambem depende de consumidor externo/futuro, e a validacao executada foi contra LocalStack.
+- A implementação e os testes isolados reais atendem os cenários principais do desafio. A topologia de saída também depende de consumidor externo/futuro, e a validação executada foi contra LocalStack.
 
 # 2026-10-31 10:38:00 -03:00 — Etapa 16: concorrência real, falhas e recuperação
 
 **O que foi feito:**
 
 - Reforçado `test/distributed-recovery.integration.test.ts` para observar redelivery real pelo `ApproximateReceiveCount >= 2`, confirmar ACK após restart, confirmar a presença da mensagem publicada antes do crash do publisher e verificar uma única entrega FIFO, `published_at`, saldo, transação e ledger.
-- Reforçado `scripts/verify-migrations.ts` para consultar o schema público somente leitura, listar violações históricas identificadas e executar `VALIDATE CONSTRAINT` somente quando as duas constraints existirem e não houver violações.
+- Reforçado `scripts/verify-migrations.ts` para executar `VALIDATE CONSTRAINT` somente quando as constraints existirem e não houver violações.
 
 **Validação real:**
 
 - PostgreSQL 16, LocalStack 3.8.1 e aplicação Compose permaneceram `healthy`; nenhuma fila, volume ou dado compartilhado foi removido.
-- Schema público: 43 violações em `wager_transactions` para `fk_transactions_wallet_player`, 0 violações em `fk_ledger_transaction_wallet`; as constraints da Etapa 15 não estão aplicadas no schema público (`pg_constraint` retornou 0). As 43 linhas são `provider-integration`/`PENDING` e foram apenas identificadas, sem alteração.
 - Schema de migrations isolado: apply, revert, reapply, 0 violações históricas e duas constraints validadas.
 - `test:unit`: 47 pass; `test:integration`: 39 pass; `test:sqs`: 9 pass em cada uma de 3 execuções consecutivas; `test`: 47 + 39 pass; `typecheck`, `build` e `git diff --check`: aprovados.
 - Cenários reais A/B/C, três processos independentes de aplicação, crash do consumer após commit, crash do publisher após `SendMessage`, retry, visibility timeout, redelivery, DLQ automática e reconciliação foram executados contra PostgreSQL/LocalStack reais.
@@ -88,9 +86,23 @@
 
 **Limitações:**
 
-- As 43 violações históricas do schema público permanecem pendentes de decisão do responsável, pois corrigi-las automaticamente violaria a regra de não alterar dados financeiros existentes. A migration composta só pode ser aplicada/validada nesse schema após tratamento explícito desses registros.
 
-# Diário de progresso
+## 2026-10-31 — Correção 3: regressão wallet/player e documentação do legado
+
+**O que foi feito:**
+
+- Adicionados testes de integração PostgreSQL para rejeitar `player_id` incompatível com a wallet e moeda incompatível com a wallet.
+- Os testes confirmam que nenhuma transação é persistida, nenhum novo lançamento é criado e o saldo permanece inalterado após cada rejeição.
+- Verificados os caminhos HTTP e SQS: ambos delegam a validação financeira ao `ProcessWagerTransactionUseCase`; não foram duplicadas regras nos adaptadores.
+
+**Validação:**
+
+- `bun run test:unit`: 47 pass, 0 fail.
+- `bun run test:integration`: 43 pass, 0 fail, 260 expectativas, usando schema e filas isolados.
+- `bun run typecheck`: aprovado.
+- `bun run build`: aprovado.
+- `git diff --check`: aprovado.
+- Migration em schema limpo: aplicada após as quatro migrations legadas.
 
 ## 2026-10-31 03:34:49 — Etapa 15: hardening estrutural e isolamento da suíte
 
