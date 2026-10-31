@@ -2,7 +2,7 @@
 
 ## Convenção
 
-Status possíveis: **proposta**, **aprovada** e **substituída**. O [README](../README.md) é a fonte dos requisitos; [challenge.md](challenge.md) é sua cópia fiel.
+Status possíveis para ADRs: **proposta**, **aprovada** e **substituída**. Para as pendências históricas, a tabela abaixo usa **resolvida**, **parcialmente resolvida** ou **pendente** conforme a evidência atual. O [README](../README.md) é a fonte dos requisitos; [challenge.md](challenge.md) é sua cópia fiel.
 
 ## Estado atual e evolução das decisões
 
@@ -46,7 +46,8 @@ Nenhuma decisão histórica é removida. Quando uma ADR antiga disser que um com
 - **Alternativas consideradas:** Prisma (fora das restrições); `synchronize: true`; TypeORM com CLI externa; TypeORM com `DataSource` compartilhado e scripts Bun; readiness misturado ao liveness.
 - **Decisão:** usar TypeORM com `@nestjs/typeorm` e driver `pg`, carregar a conexão por `DATABASE_URL`, manter `synchronize: false` e `migrationsRun: false`, e executar migrações por um `DataSource` compartilhado através dos comandos `migration:create`, `migration:run` e `migration:revert`. O liveness continuará sem dependências; `GET /health/ready` fará um `SELECT 1` no PostgreSQL e responderá `503` quando a dependência estiver indisponível.
 - **Justificativa:** atende à stack permitida, mantém o schema sob controle versionado e permite validar o ciclo de vida sem antecipar entidades financeiras.
-- **Consequências e trade-offs:** o deploy precisa executar `migration:run` explicitamente; falhas de inicialização da conexão encerram a aplicação com erro estruturado; a primeira migração contém somente uma tabela técnica `migration_probe`, que deverá ser removida ou substituída quando o schema de domínio for definido.
+- **Consequências e trade-offs:** o deploy precisa executar `migration:run` explicitamente; falhas de inicialização da conexão encerram a aplicação com erro estruturado; a primeira migração contém somente a tabela técnica `migration_probe`. Essa migration permanece no histórico ordenado e não deve ser removida ou alterada retroativamente; as migrations posteriores acrescentam o schema financeiro.
+- **Evolução posterior:** a readiness passou a verificar também o SQS quando a mensageria está habilitada; a distinção entre liveness independente e readiness de dependências permanece vigente.
 
 ## ADR-004 — Representação exata de Money
 
@@ -63,17 +64,21 @@ Nenhuma decisão histórica é removida. Quando uma ADR antiga disser que um com
 
 | ID | Título | Status | Contexto, alternativas e decisão pendente |
 |---|---|---|---|
-| PEND-001 | Concorrência por carteira | proposta | Escolher lock pessimista, otimista com retry limitado, update condicionado ou combinação. |
-| PEND-002 | Idempotência e hash | proposta | Definir campos, JSON canônico, algoritmo, constraints e replay/conflito. |
-| PEND-003 | Persistência e Money | proposta | Definir ORM permitido, colunas, precisão/escala e reidratação. |
-| PEND-004 | Síncrono versus assíncrono | proposta | Definir semântica HTTP, casos de uso compartilhados e workers. |
-| PEND-005 | Retry SQS | proposta | Definir limite, backoff, visibility timeout, DLQ e shutdown. |
-| PEND-006 | Referências ausentes | proposta | Definir agenda, TTL/limite, rejeição e failure code. |
-| PEND-007 | Outbox concorrente | proposta | Definir claim/lock, lote, retry e recuperação. |
-| PEND-008 | Autenticação | proposta | Definir IdP externo ou extensão no-op documentada. |
+| PEND-001 | Concorrência por carteira | parcialmente resolvida | Lock pessimista por `walletId` e unidade de trabalho transacional estão implementados em ADR-009/010. Não há retry automático específico para deadlock/timeout; a nova tentativa permanece responsabilidade do fluxo chamador. |
+| PEND-002 | Idempotência e hash | resolvida | Campos e unicidades persistentes, hash SHA-256 canônico sem metadados de transporte e tratamento de replay/conflito estão implementados em ADR-010/015. |
+| PEND-003 | Persistência e Money | resolvida | TypeORM isolado na persistência, `NUMERIC(20,2)`, conversão para `Money` e reidratação explícita estão implementados em ADR-008. |
+| PEND-004 | Síncrono versus assíncrono | resolvida | HTTP processa sincronicamente pelo caso de uso compartilhado; SQS processa de forma assíncrona e confirma após o commit, conforme ADR-011/014. |
+| PEND-005 | Retry SQS | resolvida | Visibility timeout, backoff de consumer/publisher, redelivery, DLQ e shutdown estão implementados e configurados conforme ADR-012/014. |
+| PEND-006 | Referências ausentes | resolvida | `PENDING_REFERENCE`, worker com lease, retry/backoff, TTL e rejeição por referência expirada estão implementados conforme ADR-007/015. |
+| PEND-007 | Outbox concorrente | resolvida | Claim com `FOR UPDATE SKIP LOCKED`, leases renováveis, retry persistido e recuperação estão implementados conforme ADR-012/015. |
+| PEND-008 | Autenticação | parcialmente resolvida | A decisão de não implementar autenticação está documentada e aceita pelo desafio; endpoints permanecem públicos e a fila é canal interno confiável. O ponto futuro de guard/port é descrito na arquitetura, mas não há IdP nem guard no-op implementado. |
 | PEND-009 | OpenAPI | proposta | Definir geração, validação e disponibilização. |
 
 Cada item deverá registrar contexto/problema, alternativas, decisão, justificativa, consequências/trade-offs e data antes de receber status **aprovada**.
+
+### Situação atual dos itens pendentes históricos
+
+A situação individual de `PEND-001` a `PEND-008` está registrada na tabela acima e foi conferida contra o código e as ADRs relacionadas. `PEND-009` permanece não implementado; OpenAPI não faz parte da implementação atual e não está incluído nesta revisão.
 
 ## ADR-008 — Persistência financeira PostgreSQL
 
@@ -151,7 +156,7 @@ Cada item deverá registrar contexto/problema, alternativas, decisão, justifica
   - **Data:** 2026-10-30
   - **Decisão:** criar `outbox_messages` e `inbox_messages` em migration reversível. O caso de uso grava eventos na mesma transação que wallet, transação e ledger. O publisher usa claim com `FOR UPDATE SKIP LOCKED`, lease recuperável e at-least-once; o consumer usa unicidade `(consumer_name,message_id)`, executa o caso de uso na mesma transação e confirma SQS somente após commit.
   - **Retry/DLQ:** publish usa backoff exponencial persistido; erro transitório de consumer deixa a mensagem para redelivery; mensagem inválida vai diretamente à DLQ; rejeição de negócio é terminal com ACK. A FIFO usa `VisibilityTimeout=30` e `maxReceiveCount=5`.
-  - **Limitação histórica:** a primeira implementação não tinha destino de saída definido pelo README e publicou temporariamente envelopes na FIFO de entrada. A auditoria demonstrou que essa alternativa permitia perda silenciosa; ela foi corrigida e substituída pela ADR-014, que separa a FIFO de integração.
+  - **Evolução:** a separação entre a FIFO de entrada e a FIFO de eventos de integração é a decisão vigente da ADR-014; ela substitui a publicação de eventos na fila de entrada para impedir perda silenciosa por consumo com contrato incompatível.
 
 - **ADR-013 — Eventos de integração versionados**
 
@@ -180,7 +185,7 @@ Cada item deverá registrar contexto/problema, alternativas, decisão, justifica
 
 - **Status:** aprovada - 2026-10-31.
 - **Contexto:** a auditoria identificou que testes de integração podiam ser ignorados, publishers externos podiam disputar a Outbox e o schema não impedia todas as associações cruzadas entre wallet, player, transação e ledger.
-- **Decisão:** separar `test:unit`, `test:integration`, `test:sqs` e `test:migrations`; o runner de integração cria schema PostgreSQL e filas FIFO exclusivas por execução, aplica migrations e remove somente os recursos próprios. A migration `StrengthenFinancialAssociations1710000004000` adiciona FKs compostas e unicidades para novas associações financeiras. FKs são `NOT VALID` na instalação sobre bancos legados para preservar dados existentes; novas inserções e atualizações continuam protegidas.
+- **Decisão:** separar `test:unit`, `test:integration`, `test:sqs` e `test:migrations`; o runner de integração cria schema PostgreSQL e filas FIFO exclusivas por execução, aplica migrations e remove somente os recursos próprios. A migration `StrengthenFinancialAssociations1710000004000` adiciona FKs compostas e unicidades para novas associações financeiras, criando as FKs como `NOT VALID` e tentando validá-las na mesma execução. Em banco legado com violações, a aplicação da migration deve ser interrompida para saneamento explícito; novas inserções e atualizações só ficam protegidas depois que a migration for aplicada.
 - **Observabilidade:** o outbox lag é zerado quando não há claims pendentes; a métrica de DLQ continua limitada a envios explícitos, sem inventar observação do redrive automático.
 - **Trade-offs:** bancos legados podem conter associações inconsistentes históricas e exigem saneamento antes de `VALIDATE CONSTRAINT`; a suíte completa requer infraestrutura real, enquanto a suíte unitária permanece independente.
 

@@ -26,6 +26,8 @@ export class StrengthenFinancialAssociations1710000004000 implements MigrationIn
       REFERENCES wager_transactions (id, wallet_id)
       NOT VALID
     `);
+    await queryRunner.query('ALTER TABLE wager_transactions VALIDATE CONSTRAINT fk_transactions_wallet_player');
+    await queryRunner.query('ALTER TABLE wallet_ledger_entries VALIDATE CONSTRAINT fk_ledger_transaction_wallet');
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {

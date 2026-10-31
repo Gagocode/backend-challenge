@@ -1,6 +1,6 @@
 # Arquitetura do Distributed Wagering Processor
 
-Este documento descreve o estado implementado na branch de observabilidade. O desafio original e o histórico de decisões permanecem em [.docs/challenge.md](.docs/challenge.md) e [.docs/decisions.md](.docs/decisions.md).
+Este documento descreve o estado implementado nesta entrega. O desafio original e o histórico de decisões permanecem em [.docs/challenge.md](.docs/challenge.md) e [.docs/decisions.md](.docs/decisions.md).
 
 ## Visão geral
 
@@ -84,6 +84,8 @@ financial transaction -> outbox row -> claim/lease -> SQS output FIFO
 
 O publisher usa leases para permitir recuperação após interrupção de processo, limita o lote e aplica backoff. Mensagens inválidas são enviadas à DLQ de entrada. Falhas transitórias permanecem disponíveis para redelivery; o redrive automático após o limite configurado é responsabilidade do SQS.
 
+A `wager-integration-events.fifo` não é consumida pelo consumer financeiro interno. Ela contém eventos da Outbox para consumidores externos ou uma futura camada de fan-out; portanto, a topologia implementada não é uma cadeia Outbox → consumer financeiro. Os testes usam LocalStack 3.8.1, não AWS em produção.
+
 Quando uma operação depende de outra transação ainda ausente, ela fica em `PENDING_REFERENCE`. O worker retoma a pendência até o TTL configurado; expirado esse prazo, a operação não é aplicada silenciosamente.
 
 ## Observabilidade e correlação
@@ -108,25 +110,31 @@ As unidades são contagens, exceto `wager_outbox_lag_seconds` e `wager_processin
 ## Health checks
 
 - `GET /health/live` retorna sucesso se o processo está vivo e não consulta dependências.
-- `GET /health/ready` consulta PostgreSQL e SQS e retorna status de indisponibilidade quando uma dependência falha.
+- `GET /health/ready` consulta PostgreSQL e SQS e retorna status de indisponibilidade quando uma dependência falha. Para SQS, a sonda exige as filas de entrada, DLQ e saída como FIFO, `ContentBasedDeduplication=false` e valida a `RedrivePolicy` da entrada para a DLQ com cinco recebimentos.
 
 Os endpoints são públicos. Readiness não encerra o processo: permite que o ambiente de execução retire a instância do tráfego e tente novamente depois.
+
+## Autenticação
+
+Autenticação e autorização não foram implementadas, conforme a opção aceita pela seção 2 do desafio e a limitação de escopo desta entrega. Os endpoints HTTP são públicos e a fila é tratada como canal interno confiável; ainda assim, `providerId`, identidade da wallet/player, moeda e demais campos da mensagem são validados. Uma integração futura deve introduzir um guard/port de identidade do provedor antes dos controllers, sem mover regras financeiras para essa camada.
 
 ## Persistência e migrações
 
 PostgreSQL é a fonte de verdade do estado financeiro e operacional. O schema contém tabelas para carteiras, ledger, transações, idempotência, Inbox, Outbox e pendências de referência, com índices e constraints para os invariantes relevantes.
 
-Migrações são executadas explicitamente por `bun run migration:run`. A aplicação não altera o schema automaticamente durante o boot. O Docker Compose fornece PostgreSQL 16 e volumes nomeados para dados locais.
+Migrações são executadas explicitamente por `bun run migration:run`. A aplicação não altera o schema automaticamente durante o boot. A migration de associações financeiras cria FKs compostas como `NOT VALID` e tenta validá-las na mesma execução; portanto, um schema legado com violações precisa de saneamento e decisão operacional antes de aplicar essa migration. O Docker Compose fornece PostgreSQL 16 e volumes nomeados para dados locais.
 
 ## Execução local
 
 Docker Compose inicia a aplicação, PostgreSQL e LocalStack. O LocalStack cria a fila FIFO de entrada, a DLQ e a fila FIFO de saída. A aplicação runtime é construída a partir de `dist`; migrações devem ser executadas pelo host com Bun e `DATABASE_URL` configurados.
 
+O bootstrap em `docker/localstack/init/ready.d/10-create-sqs.sh` é executado no estágio `READY`, usa `/bin/sh` em formato LF e atualiza somente atributos configuráveis quando as filas já existem. A fila principal recebe a `RedrivePolicy` para a DLQ e a DLQ restringe o redrive à fila principal; nenhum recurso é removido durante reinícios.
+
 Parâmetros de polling, batch, leases, retry, TTL e workers são configuráveis por ambiente e possuem defaults no código. A configuração completa de desenvolvimento está em [.env.example](.env.example).
 
 ### Testes de integração
 
-O runner de integração exige PostgreSQL e LocalStack reais. Cada execução cria um schema PostgreSQL com `search_path` exclusivo, migrations versionadas e filas FIFO próprias (entrada, DLQ e saída). Ao terminar, remove somente o schema e as filas criados pelo runner; volumes, banco público e filas de desenvolvimento não são tocados. A ausência de `DATABASE_URL`, `TEST_DATABASE_SCHEMA` ou das filas isoladas causa falha explícita. Isso impede que um publisher ou consumer externo compartilhe a Outbox do teste.
+O runner de integração exige PostgreSQL e LocalStack reais. Cada execução cria um schema PostgreSQL com `search_path` exclusivo, passa esse schema por `TEST_DATABASE_SCHEMA`, aplica migrations versionadas e cria filas FIFO próprias (entrada, DLQ e saída). Ao terminar, remove somente o schema e as filas criados pelo runner; volumes, banco público e filas de desenvolvimento não são tocados. A ausência de `DATABASE_URL` ou das dependências de SQS causa falha explícita. Isso impede que um publisher ou consumer externo compartilhe a Outbox do teste.
 
 ## Evolução documentada
 

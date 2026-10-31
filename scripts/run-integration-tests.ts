@@ -6,6 +6,7 @@ import {
   DeleteQueueCommand,
   GetQueueAttributesCommand,
   GetQueueUrlCommand,
+  SetQueueAttributesCommand,
   SQSClient,
 } from '@aws-sdk/client-sqs';
 import { createDatabaseOptions } from '../src/database/database.config';
@@ -16,6 +17,7 @@ const integrationTests = [
   'test/http.e2e.test.ts',
   'test/messaging.integration.test.ts',
   'test/sqs.regression.integration.test.ts',
+  'test/distributed-recovery.integration.test.ts',
 ];
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -51,7 +53,7 @@ async function createQueues(sqs: SQSClient): Promise<void> {
   const dlqArn = dlqAttributes.Attributes?.QueueArn;
   if (!dlqArn) throw new Error('LocalStack did not return the integration DLQ ARN');
 
-  await sqs.send(new CreateQueueCommand({
+  const main = await sqs.send(new CreateQueueCommand({
     QueueName: queueNames.main,
     Attributes: {
       FifoQueue: 'true',
@@ -59,6 +61,14 @@ async function createQueues(sqs: SQSClient): Promise<void> {
       VisibilityTimeout: '30',
       RedrivePolicy: JSON.stringify({ deadLetterTargetArn: dlqArn, maxReceiveCount: '5' }),
     },
+  }));
+  if (!main.QueueUrl) throw new Error('LocalStack did not return the integration main queue URL');
+  const mainAttributes = await sqs.send(new GetQueueAttributesCommand({ QueueUrl: main.QueueUrl, AttributeNames: ['QueueArn'] }));
+  const mainArn = mainAttributes.Attributes?.QueueArn;
+  if (!mainArn) throw new Error('LocalStack did not return the integration main queue ARN');
+  await sqs.send(new SetQueueAttributesCommand({
+    QueueUrl: dlq.QueueUrl,
+    Attributes: { RedriveAllowPolicy: JSON.stringify({ redrivePermission: 'byQueue', sourceQueueArns: [mainArn] }) },
   }));
   await sqs.send(new CreateQueueCommand({
     QueueName: queueNames.output,

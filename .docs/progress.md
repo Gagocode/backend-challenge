@@ -1,4 +1,108 @@
-# Diário de progresso
+# 2026-10-31 11:22:30 -03:00 — Etapa 18: correção do bootstrap e readiness do LocalStack
+
+**O que foi feito:**
+
+- Identificada a causa raiz do bootstrap ausente: `10-create-sqs.sh` usava `#!/bin/bash` e CRLF; a imagem `localstack/localstack:3.8.1` não executava esse shebang no estágio `READY` e registrava `Errno 2`.
+- Corrigido o script existente para `/bin/sh` com LF, execução idempotente e preservação de filas/mensagens existentes. Filas não FIFO falham explicitamente em vez de serem substituídas.
+- Alinhadas as variáveis `SQS_MAIN_QUEUE`, `SQS_DLQ` e `SQS_OUTPUT_QUEUE` entre LocalStack e aplicação no Compose.
+- Reforçada a readiness para validar as três filas FIFO, `ContentBasedDeduplication=false` e a `RedrivePolicy` da fila principal para a DLQ com `maxReceiveCount=5`.
+- Configurada também a `RedriveAllowPolicy` da DLQ para a fila principal, sem remover ou recriar recursos.
+
+**Validação real:**
+
+- Reinício do LocalStack com os volumes existentes executou automaticamente `Ensuring FIFO queues` e `SQS FIFO queues are ready`; o segundo reinício foi idempotente.
+- Encontradas três filas: `wager-transactions.fifo`, `wager-transactions-dlq.fifo` e `wager-integration-events.fifo`; todas FIFO, com deduplicação baseada em conteúdo desabilitada e contagens de mensagens zero.
+- A fila principal confirmou redrive para `wager-transactions-dlq.fifo` após cinco recebimentos; a DLQ confirmou `RedriveAllowPolicy` restrita à fila principal.
+- `bun run test:sqs`: 11 pass, 0 fail, 121 expectativas, contra PostgreSQL e LocalStack reais em schema/filas isolados.
+- `/health/live`: HTTP 200. `/health/ready`: HTTP 200 com PostgreSQL/SQS operacionais; com LocalStack parado, HTTP 503 e `sqs=down`; após restauração, HTTP 200 novamente.
+- `bun run typecheck`, `bun run build` e `git diff --check`: aprovados. Volumes, filas e mensagens não foram removidos.
+
+**Arquivos alterados nesta etapa:**
+
+- `docker-compose.yml`
+- `.gitattributes`
+- `docker/localstack/init/ready.d/10-create-sqs.sh`
+- `src/messaging/sqs/sqs-client.ts`
+- `README.md`
+- `ARCHITECTURE.md`
+- `.docs/progress.md`
+
+# 2026-10-31 10:53:19 -03:00 — Etapa 17: auditoria final e preparacao da entrega
+
+**O que foi feito:**
+
+- Auditado o Git: branch atual `feature/final-hardening-2`, um commit (`b718c1b`) a frente de `develop`, dois commits a frente de `feature/final-hardening`, sem commits novos nesta etapa e com somente alteracoes de trabalho pendentes.
+- Confrontado o enunciado integral em `.docs/challenge.md` com dominio, persistencia, idempotencia, concorrencia, SQS, API, infraestrutura, observabilidade, seguranca, testes e documentacao.
+- Adicionado teste real com 50 debitos identicos usando tres processos de aplicacao; teste real de `REFUND` antes do `BET` via SQS; e corrida real entre dois publishers independentes para a mesma Outbox.
+- Corrigida a documentacao para refletir a topologia real: a fila de eventos da Outbox nao e consumida pelo consumer financeiro interno; os testes SQS usam LocalStack, nao AWS de producao; e nao ha autenticacao implementada.
+
+**Validacao final:**
+
+- `bun run test:unit`: 47 pass.
+- `bun run test:integration`: 41 pass, 252 expects.
+- `bun run test:sqs`: 11 pass, 121 expects.
+- `bun run test:migrations`: exit 0; schema isolado com apply, revert, reapply, zero violações e duas constraints validadas.
+- `bun run test`: 47 testes unitarios + 41 de integracao pass, 0 falhas.
+- `bun run typecheck`, `bun run build` e `git diff --check`: aprovados.
+- Health HTTP: liveness `200 ok`; readiness `503` porque as filas padrao nao estavam presentes no LocalStack persistido, embora PostgreSQL, LocalStack e app estivessem `healthy` no Compose. Nenhuma fila ou volume foi removido.
+- `bun pm scan`: nao executado por ausencia de scanner configurado; nao ha conclusao de vulnerabilidades de dependencias.
+
+**Arquivos alterados nesta etapa:**
+
+- `test/distributed-recovery.integration.test.ts`
+- `scripts/verify-migrations.ts`
+- `README.md`
+- `ARCHITECTURE.md`
+- `.docs/decisions.md`
+- `.docs/progress.md`
+
+**Parecer preliminar:**
+
+- A implementação e os testes isolados reais atendem os cenários principais do desafio. A topologia de saída também depende de consumidor externo/futuro, e a validação executada foi contra LocalStack.
+
+# 2026-10-31 10:38:00 -03:00 — Etapa 16: concorrência real, falhas e recuperação
+
+**O que foi feito:**
+
+- Reforçado `test/distributed-recovery.integration.test.ts` para observar redelivery real pelo `ApproximateReceiveCount >= 2`, confirmar ACK após restart, confirmar a presença da mensagem publicada antes do crash do publisher e verificar uma única entrega FIFO, `published_at`, saldo, transação e ledger.
+- Reforçado `scripts/verify-migrations.ts` para executar `VALIDATE CONSTRAINT` somente quando as constraints existirem e não houver violações.
+
+**Validação real:**
+
+- PostgreSQL 16, LocalStack 3.8.1 e aplicação Compose permaneceram `healthy`; nenhuma fila, volume ou dado compartilhado foi removido.
+- Schema de migrations isolado: apply, revert, reapply, 0 violações históricas e duas constraints validadas.
+- `test:unit`: 47 pass; `test:integration`: 39 pass; `test:sqs`: 9 pass em cada uma de 3 execuções consecutivas; `test`: 47 + 39 pass; `typecheck`, `build` e `git diff --check`: aprovados.
+- Cenários reais A/B/C, três processos independentes de aplicação, crash do consumer após commit, crash do publisher após `SendMessage`, retry, visibility timeout, redelivery, DLQ automática e reconciliação foram executados contra PostgreSQL/LocalStack reais.
+
+**Falha observada e corrigida durante a validação:**
+
+- A primeira versão da asserção tentou usar `Inbox.attempts` para provar redelivery de uma mensagem já processada; a implementação preserva esse contador nesse caso. A evidência foi corrigida para usar `ApproximateReceiveCount` diretamente no SQS, sem mudar o comportamento financeiro.
+
+**Arquivos alterados:**
+
+- `scripts/verify-migrations.ts`
+- `test/distributed-recovery.integration.test.ts`
+- `.docs/progress.md`
+
+**Limitações:**
+
+
+## 2026-10-31 — Correção 3: regressão wallet/player e documentação do legado
+
+**O que foi feito:**
+
+- Adicionados testes de integração PostgreSQL para rejeitar `player_id` incompatível com a wallet e moeda incompatível com a wallet.
+- Os testes confirmam que nenhuma transação é persistida, nenhum novo lançamento é criado e o saldo permanece inalterado após cada rejeição.
+- Verificados os caminhos HTTP e SQS: ambos delegam a validação financeira ao `ProcessWagerTransactionUseCase`; não foram duplicadas regras nos adaptadores.
+
+**Validação:**
+
+- `bun run test:unit`: 47 pass, 0 fail.
+- `bun run test:integration`: 43 pass, 0 fail, 260 expectativas, usando schema e filas isolados.
+- `bun run typecheck`: aprovado.
+- `bun run build`: aprovado.
+- `git diff --check`: aprovado.
+- Migration em schema limpo: aplicada após as quatro migrations legadas.
 
 ## 2026-10-31 03:34:49 — Etapa 15: hardening estrutural e isolamento da suíte
 

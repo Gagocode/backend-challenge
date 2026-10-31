@@ -69,6 +69,7 @@ export class WagerTransactionConsumer implements OnModuleInit, OnModuleDestroy {
   private running = false;
   private polling?: Promise<void>;
   private shuttingDown = false;
+  private crashFaultInjected = false;
   private readonly abortController = new AbortController();
 
   public constructor(
@@ -129,6 +130,7 @@ export class WagerTransactionConsumer implements OnModuleInit, OnModuleDestroy {
     const startedAt = Date.now();
     const correlationId = safeCorrelationId(parsed.correlationId, safeCorrelationId(parsed.messageId));
     try {
+      if (this.shouldInjectTransientFault()) throw new Error('controlled transient consumer fault');
       await this.unitOfWork.execute(async (context) => {
         const receipt = await context.inbox.receive(parsed.messageId, this.sqs.consumerName, payloadHash, new Date(parsed.occurredAt));
         if (receipt.message.isProcessed()) { this.metrics.duplicate('sqs'); this.logger.info('sqs_message_duplicate', { correlationId, messageId: parsed.messageId, consumerName: this.sqs.consumerName, attempt: receiveCount, component: 'consumer' }); return; }
@@ -149,6 +151,7 @@ export class WagerTransactionConsumer implements OnModuleInit, OnModuleDestroy {
           businessTerminal = true;
         }
       });
+      if (this.shouldCrashAfterCommitBeforeAck()) process.exit(42);
       if (!this.shuttingDown && message.ReceiptHandle) await this.sqs.delete(message.ReceiptHandle);
       if (result) { this.process.observe(result, { ...parsed.data, kind: parsed.data.kind, money: Money.from(parsed.data.money), payloadHash, correlationId, source: 'sqs', idempotencyKey: parsed.data.idempotencyKey }, 'sqs', startedAt); this.logger.info('sqs_message_processed', { consumerName: this.sqs.consumerName, messageId: parsed.messageId, correlationId, transactionId: result.transaction.id, walletId: result.wallet.id, providerId: result.transaction.providerId, attempt: receiveCount, component: 'consumer' }); }
     } catch (error: unknown) {
@@ -158,6 +161,16 @@ export class WagerTransactionConsumer implements OnModuleInit, OnModuleDestroy {
       if (message.ReceiptHandle) await this.sqs.retry(message.ReceiptHandle, seconds);
     }
     if (businessTerminal) this.logger.warn('sqs_consumer_terminal', { consumerName: this.sqs.consumerName, messageId: parsed.messageId, correlationId, component: 'consumer', reason: 'business' });
+  }
+
+  private shouldInjectTransientFault(): boolean {
+    return process.env.NODE_ENV === 'test' && process.env.SQS_FAULT_INJECTION === 'transient-before-processing';
+  }
+
+  private shouldCrashAfterCommitBeforeAck(): boolean {
+    if (process.env.NODE_ENV !== 'test' || process.env.SQS_FAULT_INJECTION !== 'crash-after-commit-before-ack' || this.crashFaultInjected) return false;
+    this.crashFaultInjected = true;
+    return true;
   }
 
   private async recordTerminalMessage(messageId: string, body: string, error: string): Promise<void> {
