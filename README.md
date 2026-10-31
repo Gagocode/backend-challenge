@@ -37,7 +37,9 @@ Os principais diretórios estão organizados em:
 - `src/application`: casos de uso, portas e mensagens.
 - `src/persistence`: PostgreSQL, TypeORM, repositórios e unidade de trabalho.
 - `src/messaging`: SQS, publisher, consumer e workers.
-- `src/http`: controllers, filtros e health checks.
+- `src/http`: controllers financeiros, validação e filtros.
+- `src/health.controller.ts`: endpoint de liveness.
+- `src/readiness.controller.ts`: endpoint de readiness.
 - `src/observability`: logger estruturado e métricas.
 
 Mais detalhes estão em [ARCHITECTURE.md](ARCHITECTURE.md) e as decisões históricas estão em [.docs/decisions.md](.docs/decisions.md).
@@ -208,6 +210,8 @@ Content-Type: application/json
   "balance": { "amount": "975.00", "currency": "BRL" }
 }
 ```
+
+Este exemplo pressupõe que a carteira tinha saldo inicial de `1000.00 BRL` antes da aposta de `25.00 BRL`.
 
 O mesmo `Idempotency-Key` com conteúdo financeiro diferente retorna `409 CONFLICT`; payload inválido retorna `400 INVALID_PAYLOAD`. Uma rejeição de negócio como saldo insuficiente retorna `422` e inclui o estado `REJECTED` e seu `failureCode`.
 

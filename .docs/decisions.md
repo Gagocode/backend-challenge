@@ -190,14 +190,6 @@ A situação individual de `PEND-001` a `PEND-008` está registrada na tabela ac
 - **Decisão:** HTTP e SQS usam a mesma canonização dos campos financeiros; `messageId`, timestamp de transporte e outros metadados não participam do hash. A Inbox continua identificada por `(consumer_name,message_id)`. Outbox e `PENDING_REFERENCE` usam tokens e leases persistidos no PostgreSQL, com renovação periódica e backoff persistido.
 - **Justificativa:** preserva replay idempotente entre redeliveries/envelopes distintos sem relaxar conflito de payload, e permite exclusividade/recuperação entre múltiplas instâncias.
 - **Consequências:** publicação continua at-least-once; falha depois do envio e antes do commit de `published_at` pode produzir duplicata, que consumidores devem tratar de forma idempotente.
-## ADR-017 - Hardening de isolamento e invariantes persistentes
-
-- **Status:** aprovada - 2026-10-31.
-- **Contexto:** a auditoria identificou que testes de integração podiam ser ignorados, publishers externos podiam disputar a Outbox e o schema não impedia todas as associações cruzadas entre wallet, player, transação e ledger.
-- **Decisão:** separar `test:unit`, `test:integration`, `test:sqs` e `test:migrations`; o runner de integração cria schema PostgreSQL e filas FIFO exclusivas por execução, aplica migrations e remove somente os recursos próprios. A migration `StrengthenFinancialAssociations1710000004000` adiciona FKs compostas e unicidades para novas associações financeiras, criando as FKs como `NOT VALID` e tentando validá-las na mesma execução. Em banco legado com violações, a aplicação da migration deve ser interrompida para saneamento explícito; novas inserções e atualizações só ficam protegidas depois que a migration for aplicada.
-- **Observabilidade:** o outbox lag é zerado quando não há claims pendentes; a métrica de DLQ continua limitada a envios explícitos, sem inventar observação do redrive automático.
-- **Trade-offs:** bancos legados podem conter associações inconsistentes históricas e exigem saneamento antes de `VALIDATE CONSTRAINT`; a suíte completa requer infraestrutura real, enquanto a suíte unitária permanece independente.
-
 ## ADR-016 - Observabilidade operacional sem infraestrutura adicional
 
 - **Status:** aprovada - 2026-10-31.
@@ -206,3 +198,11 @@ A situação individual de `PEND-001` a `PEND-008` está registrada na tabela ac
 - **Semantica:** status e contado somente para resultado financeiro novo; replay HTTP e redelivery Inbox processada contam como duplicata, sem repetir efeito. Lag e latencia usam segundos; retry, DLQ, lock e divergencia usam contadores.
 - **Correlacao:** IDs externos sao validados por formato; HTTP propaga o ID para o caso de uso e Outbox, e SQS o propaga no envelope, usando `messageId` como fallback. `causationId` identifica a mensagem de origem.
 - **Consequencias:** a aplicacao nao depende de exporter ou servidor adicional e continua simples de operar. O endpoint nao oferece retencao nem alertas; redrive automatico do SQS so pode ser observado por ferramentas externas.
+
+## ADR-017 - Hardening de isolamento e invariantes persistentes
+
+- **Status:** aprovada - 2026-10-31.
+- **Contexto:** a auditoria identificou que testes de integração podiam ser ignorados, publishers externos podiam disputar a Outbox e o schema não impedia todas as associações cruzadas entre wallet, player, transação e ledger.
+- **Decisão:** separar `test:unit`, `test:integration`, `test:sqs` e `test:migrations`; o runner de integração cria schema PostgreSQL e filas FIFO exclusivas por execução, aplica migrations e remove somente os recursos próprios. A migration `StrengthenFinancialAssociations1710000004000` adiciona FKs compostas e unicidades para novas associações financeiras, criando as FKs como `NOT VALID` e tentando validá-las na mesma execução. Em banco legado com violações, a aplicação da migration deve ser interrompida para saneamento explícito; novas inserções e atualizações só ficam protegidas depois que a migration for aplicada.
+- **Observabilidade:** o outbox lag é zerado quando não há claims pendentes; a métrica de DLQ continua limitada a envios explícitos, sem inventar observação do redrive automático.
+- **Trade-offs:** bancos legados podem conter associações inconsistentes históricas e exigem saneamento antes de `VALIDATE CONSTRAINT`; a suíte completa requer infraestrutura real, enquanto a suíte unitária permanece independente.

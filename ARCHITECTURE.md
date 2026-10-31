@@ -75,6 +75,7 @@ O processamento financeiro e a escrita da Outbox pertencem à mesma transação 
 sequenceDiagram
     autonumber
     actor Provider as Provedor HTTP
+    participant Http as Controller HTTP
     participant Input as SQS de entrada
     participant Consumer as Consumer SQS
     participant UseCase as Caso de uso
@@ -84,7 +85,8 @@ sequenceDiagram
     participant Output as SQS de eventos
 
     alt Entrada HTTP
-        Provider->>UseCase: POST transação
+        Provider->>Http: POST transação
+        Http->>UseCase: validar request e invocar caso de uso
         UseCase->>UOW: execute dentro da unidade de trabalho
     else Entrada SQS
         Input->>Consumer: entrega at-least-once
