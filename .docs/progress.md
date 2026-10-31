@@ -1,5 +1,40 @@
 # Diário de progresso
 
+## 2026-10-31 — Correção e auditoria complementar da Etapa 12
+
+**Correções implementadas:**
+
+- Separada a topologia SQS: `wager-transactions.fifo` permanece entrada, `wager-transactions-dlq.fifo` permanece DLQ e `wager-integration-events.fifo` tornou-se o destino exclusivo da Outbox.
+- Consumer financeiro deixou de ACKar envelopes de integração; mensagens incompatíveis são auditadas e roteadas à DLQ antes do delete.
+- Hash HTTP/SQS passou a considerar somente o payload financeiro canônico, excluindo `messageId` e timestamps de transporte.
+- `main.ts` habilita hooks de `SIGINT`/`SIGTERM`; o receive SQS é abortável e o consumer não confirma durante shutdown.
+- Outbox ganhou renovação periódica de lease com token persistente; `markPublished`/retry só alteram o registro se ainda forem proprietários.
+- `PENDING_REFERENCE` ganhou migration reversível com tentativas, backoff, claim, lease e último erro persistentes; workers concorrentes usam claim SQL distribuído.
+- Corrigida a leitura de retornos `UPDATE ... RETURNING` do driver TypeORM/Bun, que são tuplas `[rows,rowCount]`.
+
+**Testes de regressão:**
+
+- Teste unitário de hash independente do ID de transporte.
+- Teste unitário de roteamento de evento de integração para DLQ e shutdown abortável.
+- PostgreSQL real: atomicidade Inbox/Outbox, corrida de Inbox, corrida de publishers, publicação lenta com lease renovado, token de lease e claims concorrentes/backoff de `PENDING_REFERENCE`.
+
+**Validação parcial:**
+
+- `bun run typecheck` aprovado.
+- Testes messaging unitários e de integração PostgreSQL real: 10 pass, 0 fail na rodada corrigida (3 regressões unitárias + 7 testes de persistência/concorrência).
+- Nenhum commit, merge ou remoção de volume foi executado.
+
+**Pendências desta auditoria:** validar a nova fila no LocalStack, repetir a suíte completa e executar a auditoria final de redelivery/ACK com a aplicação reconstruída.
+
+## 2026-10-31 — Validação final da correção da auditoria
+
+- Migration `CreatePendingReferenceLeases1710000003000` executada, revertida e reaplicada com sucesso no banco isolado `wager_messaging_validation`.
+- LocalStack confirmou as três filas: `wager-transactions.fifo`, `wager-transactions-dlq.fifo` e `wager-integration-events.fifo`; readiness retornou PostgreSQL/SQS `up`.
+- Processo NestJS real + LocalStack validou duas mensagens com IDs de envelope diferentes: uma transação `PROCESSED`, um lançamento e dois registros Inbox `PROCESSED`; evento de saída recebido na FIFO dedicada.
+- Suíte final: `bun run typecheck`, `bun run build`, `bun test` e `git diff --check` aprovados; `67 pass`, `0 fail`, `265 expect`.
+- Normalização monetária do hash foi reforçada para que representações equivalentes como `10.0` e `10.00` tenham o mesmo hash.
+- App Compose foi reconstruído e reiniciado com sucesso; volumes e banco principal foram preservados. Nenhum commit ou merge foi criado.
+
 ## 2026-10-30 — Complemento Etapa 11: suíte E2E HTTP automatizada
 
 **O que foi feito:**
@@ -385,3 +420,31 @@ A persistência financeira da Etapa 9 foi validada contra PostgreSQL real. Não 
 - Não há cliente SQS nesta etapa; readiness não simula uma verificação positiva de SQS.
 - Testes E2E automatizados completos devem ser executados no ambiente CI com Docker e incluídos na próxima rodada de endurecimento da API; consumer, inbox/outbox, retry/DLQ e autenticação permanecem fora do escopo.
 
+## 2026-10-30 — Etapa 12: Transactional Outbox, Inbox e SQS
+
+**O que foi feito:**
+
+- Adicionado `@aws-sdk/client-sqs`, readiness SQS e workers `OutboxPublisher`/`WagerTransactionConsumer` com shutdown pelo ciclo de vida NestJS.
+- Criadas entidades Inbox/Outbox e migration reversível `1710000002000-CreateMessagingPersistence`, com JSONB, índices, constraints, leases, tentativas, falhas e unicidade persistente.
+- Criados eventos versionados `WagerTransactionProcessed`, `WagerTransactionRejected`, `WalletBalanceChanged` e `WagerTransactionPendingReference`.
+- Integrada a Outbox à mesma unidade SQL dos casos de uso financeiros, sem serializar entidades ORM ou instâncias `Money`; `LOSS` também produz evento processado.
+- Implementados claim distribuído com `FOR UPDATE SKIP LOCKED`, recuperação de leases, backoff de publicação e Inbox com `ON CONFLICT DO NOTHING` + `FOR UPDATE`.
+- Consumer reutiliza `ProcessWagerTransactionUseCase`, confirma SQS apenas depois do commit, diferencia terminal/transitório e encaminha mensagens inválidas à DLQ.
+- Adicionados testes de eventos e integração PostgreSQL para atomicidade, rollback e concorrência Inbox.
+
+**Validação real:**
+
+- PostgreSQL e LocalStack reais ficaram saudáveis; migration aplicada e tabelas `inbox_messages`/`outbox_messages` confirmadas.
+- Readiness retornou PostgreSQL e SQS `up`; FIFO confirmou `VisibilityTimeout=30`, `ReceiveMessageWaitTimeSeconds=0` e redrive `maxReceiveCount=5`.
+- Publisher real marcou eventos com `published_at` após publicação; claim foi corrigido após auditoria do retorno SQL.
+- Mensagem SQS válida processou Inbox, transação e saldo real (`100.00` → `75.00`); mensagens inválidas foram auditadas como `FAILED` e roteadas à DLQ.
+- `bun run typecheck`, `bun run build` e testes messaging adicionais passaram; a suíte completa com PostgreSQL real será repetida na validação final.
+
+**Limitação documentada:**
+
+- O README define somente a FIFO de wagering e sua DLQ, sem fila de eventos de saída. Para não inventar uma topologia, eventos Outbox usam a FIFO declarada e o consumer ACKa envelopes `eventType` sem processá-los financeiramente; uma fila pub/sub separada exige decisão contratual.
+## 2026-10-30 — Fechamento da validação da Etapa 12
+
+- `bun run typecheck`, `bun run build`, `bun test` com PostgreSQL real e `git diff --check` aprovados.
+- Resultado final: 60 testes pass, 0 fail e 242 expectativas.
+- App final reconstruído e healthy; readiness confirmou PostgreSQL/SQS `up`; nenhum commit, merge ou alteração de `develop`/`main` foi feito.

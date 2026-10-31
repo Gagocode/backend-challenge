@@ -5,6 +5,7 @@ import { InsufficientWalletBalanceError } from '../../domain/wallet/wallet';
 import { LedgerDirection } from '../../domain/wallet/wallet-ledger-entry';
 import type { FinancialTransactionContext, FinancialUnitOfWork } from '../ports/financial-repositories';
 import { FinancialConflictError, InvalidFinancialOperationError, WalletNotFoundError } from '../financial-errors';
+import { enqueueFinancialEvents } from '../messaging/enqueue-financial-events';
 
 export interface ProcessWagerTransactionCommand {
   id?: string;
@@ -20,6 +21,9 @@ export interface ProcessWagerTransactionCommand {
   money: import('../../domain/money/money').Money;
   referenceExternalTransactionId?: string;
   now?: Date;
+  correlationId?: string;
+  causationId?: string;
+  expirePendingReference?: boolean;
 }
 
 export interface ProcessWagerTransactionResult {
@@ -40,7 +44,7 @@ export class ProcessWagerTransactionUseCase {
 
   public async execute(command: ProcessWagerTransactionCommand): Promise<ProcessWagerTransactionResult> {
     try {
-      return await this.unitOfWork.execute((context) => this.processWithinTransaction(command, context));
+      return await this.unitOfWork.execute((context) => this.executeWithinTransaction(command, context));
     } catch (error: unknown) {
       if (!isUniqueViolation(error)) throw error;
       const replay = await this.unitOfWork.execute(async ({ transactions, wallets }) => {
@@ -60,7 +64,7 @@ export class ProcessWagerTransactionUseCase {
     }
   }
 
-  private async processWithinTransaction(command: ProcessWagerTransactionCommand, context: FinancialTransactionContext): Promise<ProcessWagerTransactionResult> {
+  public async executeWithinTransaction(command: ProcessWagerTransactionCommand, context: FinancialTransactionContext): Promise<ProcessWagerTransactionResult> {
     const { wallets, transactions, ledger } = context;
     const existing = await transactions.findByProviderAndIdempotencyKey(command.providerId, command.idempotencyKey, true);
     if (existing && !existing.matchesPayload(command.payloadHash)) throw new FinancialConflictError('Idempotency key was used with a different payload');
@@ -87,6 +91,13 @@ export class ProcessWagerTransactionUseCase {
       if (transaction.status === WagerTransactionStatus.Pending) {
         transaction.markPendingReference();
         const saved = await transactions.save(transaction);
+        await enqueueFinancialEvents(context, saved, wallet, undefined, { correlationId: command.correlationId ?? command.idempotencyKey, ...(command.causationId ? { causationId: command.causationId } : {}) }, command.now ?? new Date());
+        return { transaction: saved, wallet, idempotentReplay: false };
+      }
+      if (command.expirePendingReference) {
+        transaction.reject(FailureCode.ReferenceNotFound);
+        const saved = await transactions.save(transaction);
+        await enqueueFinancialEvents(context, saved, wallet, undefined, { correlationId: command.correlationId ?? command.idempotencyKey, ...(command.causationId ? { causationId: command.causationId } : {}) }, command.now ?? new Date());
         return { transaction: saved, wallet, idempotentReplay: false };
       }
       return { transaction, wallet, idempotentReplay: true };
@@ -94,17 +105,19 @@ export class ProcessWagerTransactionUseCase {
     if (command.referenceExternalTransactionId && !reference) {
       transaction.reject(FailureCode.ReferenceNotFound);
       const saved = await transactions.save(transaction);
+      await enqueueFinancialEvents(context, saved, wallet, undefined, { correlationId: command.correlationId ?? command.idempotencyKey, ...(command.causationId ? { causationId: command.causationId } : {}) }, command.now ?? new Date());
       return { transaction: saved, wallet, idempotentReplay: false };
     }
     if (reference) {
       try { transaction.assertValidReference(reference); }
-      catch { transaction.reject(FailureCode.InvalidReference); const saved = await transactions.save(transaction); return { transaction: saved, wallet, idempotentReplay: false }; }
+      catch { transaction.reject(FailureCode.InvalidReference); const saved = await transactions.save(transaction); await enqueueFinancialEvents(context, saved, wallet, undefined, { correlationId: command.correlationId ?? command.idempotencyKey, ...(command.causationId ? { causationId: command.causationId } : {}) }, command.now ?? new Date()); return { transaction: saved, wallet, idempotentReplay: false }; }
     }
 
     const at = command.now ?? new Date();
     if (command.kind === WagerTransactionKind.Loss) {
       transaction.markProcessed(undefined, at);
       const saved = await transactions.save(transaction);
+      await enqueueFinancialEvents(context, saved, wallet, undefined, { correlationId: command.correlationId ?? command.idempotencyKey, ...(command.causationId ? { causationId: command.causationId } : {}) }, at);
       return { transaction: saved, wallet, idempotentReplay: false };
     }
 
@@ -118,20 +131,23 @@ export class ProcessWagerTransactionUseCase {
       if (error instanceof InsufficientWalletBalanceError) {
         transaction.reject(command.kind === WagerTransactionKind.Rollback || command.kind === WagerTransactionKind.Refund ? FailureCode.ReversalInsufficientBalance : FailureCode.InsufficientBalance);
         const saved = await transactions.save(transaction);
+        await enqueueFinancialEvents(context, saved, wallet, undefined, { correlationId: command.correlationId ?? command.idempotencyKey, ...(command.causationId ? { causationId: command.causationId } : {}) }, at);
         return { transaction: saved, wallet, idempotentReplay: false };
       }
       if (error instanceof CurrencyMismatchError) {
         transaction.reject(FailureCode.CurrencyMismatch);
         const saved = await transactions.save(transaction);
+        await enqueueFinancialEvents(context, saved, wallet, undefined, { correlationId: command.correlationId ?? command.idempotencyKey, ...(command.causationId ? { causationId: command.causationId } : {}) }, at);
         return { transaction: saved, wallet, idempotentReplay: false };
       }
       throw error;
     }
     transaction.markProcessed(reference?.id, at);
     const saved = await transactions.save(transaction);
-    await wallets.save(wallet);
+    const persistedWallet = await wallets.save(wallet);
     await ledger.save(entry);
-    return { transaction: saved, wallet, idempotentReplay: false, balanceAtProcessing: entry.balanceAfter };
+    await enqueueFinancialEvents(context, saved, persistedWallet, entry, { correlationId: command.correlationId ?? command.idempotencyKey, ...(command.causationId ? { causationId: command.causationId } : {}) }, at);
+    return { transaction: saved, wallet: persistedWallet, idempotentReplay: false, balanceAtProcessing: entry.balanceAfter };
   }
 
   private async replayOrConflict(transaction: WagerTransaction, payloadHash: string, wallets: FinancialTransactionContext['wallets'], ledger: FinancialTransactionContext['ledger']): Promise<ProcessWagerTransactionResult> {

@@ -5,6 +5,7 @@ import { Wallet } from '../../domain/wallet/wallet';
 import { WalletLedgerEntry } from '../../domain/wallet/wallet-ledger-entry';
 import type { FinancialUnitOfWork } from '../ports/financial-repositories';
 import { FinancialConflictError } from '../financial-errors';
+import { enqueueFinancialEvents } from '../messaging/enqueue-financial-events';
 
 export interface CreateWalletCommand { id: string; playerId: string; initialBalance: Money; now?: Date; }
 
@@ -19,7 +20,7 @@ export class CreateWalletUseCase {
 
   public async execute(command: CreateWalletCommand): Promise<Wallet> {
     try {
-      return await this.unitOfWork.execute(async ({ wallets, transactions, ledger }) => {
+      return await this.unitOfWork.execute(async ({ wallets, transactions, ledger, inbox, outbox }) => {
         const existing = await wallets.findByPlayerAndCurrency(command.playerId, command.initialBalance.currency);
         if (existing) throw new FinancialConflictError('A wallet already exists for this player and currency');
 
@@ -41,6 +42,7 @@ export class CreateWalletUseCase {
         });
         await transactions.save(opening);
         await ledger.save(openingEntry);
+        await enqueueFinancialEvents({ wallets, transactions, ledger, inbox, outbox }, opening, persistedWallet, openingEntry, { correlationId: `opening:${wallet.id}` }, at);
         return persistedWallet;
       });
     } catch (error: unknown) {

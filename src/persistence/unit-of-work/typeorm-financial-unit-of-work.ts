@@ -1,6 +1,7 @@
 import { DataSource } from 'typeorm';
 import type { FinancialTransactionContext, FinancialUnitOfWork } from '../../application/ports/financial-repositories';
 import { TypeOrmWagerTransactionRepository, TypeOrmWalletLedgerEntryRepository, TypeOrmWalletRepository } from '../repositories/financial-repositories';
+import { TypeOrmInboxRepository, TypeOrmOutboxRepository } from '../repositories/messaging-repositories';
 
 export class TypeOrmFinancialUnitOfWork implements FinancialUnitOfWork {
   public constructor(private readonly dataSource: DataSource) {}
@@ -10,6 +11,8 @@ export class TypeOrmFinancialUnitOfWork implements FinancialUnitOfWork {
       wallets: new TypeOrmWalletRepository(manager),
       transactions: new TypeOrmWagerTransactionRepository(manager),
       ledger: new TypeOrmWalletLedgerEntryRepository(manager),
+      inbox: new TypeOrmInboxRepository(manager),
+      outbox: new TypeOrmOutboxRepository(manager),
     }));
   }
 }

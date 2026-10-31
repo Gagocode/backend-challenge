@@ -134,3 +134,34 @@ Cada item deverá registrar contexto/problema, alternativas, decisão, justifica
 - **Decisão:** controllers usam DTOs HTTP estritos e serializadores próprios; regras financeiras permanecem nos casos de uso. A paginação do ledger é cursor-based por `(createdAt,id)`, e a reconciliação é somente leitura, com divergências logadas.
 - **Justificativa:** evita acoplamento com TypeORM, mantém respostas determinísticas e não mascara inconsistências financeiras.
 - **Trade-offs:** a readiness reporta somente PostgreSQL enquanto o cliente SQS não existe; a integração SQS será adicionada em etapa posterior.
+- **ADR-012 — Transactional Outbox e Inbox persistentes**
+
+  - **Status:** aprovada
+  - **Data:** 2026-10-30
+  - **Decisão:** criar `outbox_messages` e `inbox_messages` em migration reversível. O caso de uso grava eventos na mesma transação que wallet, transação e ledger. O publisher usa claim com `FOR UPDATE SKIP LOCKED`, lease recuperável e at-least-once; o consumer usa unicidade `(consumer_name,message_id)`, executa o caso de uso na mesma transação e confirma SQS somente após commit.
+  - **Retry/DLQ:** publish usa backoff exponencial persistido; erro transitório de consumer deixa a mensagem para redelivery; mensagem inválida vai diretamente à DLQ; rejeição de negócio é terminal com ACK. A FIFO usa `VisibilityTimeout=30` e `maxReceiveCount=5`.
+  - **Limitação histórica:** a primeira implementação não tinha destino de saída definido pelo README e publicou temporariamente envelopes na FIFO de entrada. A auditoria demonstrou que essa alternativa permitia perda silenciosa; ela foi corrigida e substituída pela ADR-014, que separa a FIFO de integração.
+
+- **ADR-013 — Eventos de integração versionados**
+
+  - **Status:** aprovada
+  - **Data:** 2026-10-30
+  - **Decisão:** usar classe abstrata `IntegrationEvent` e uma classe concreta por evento, com `eventId`, `eventType`, `aggregateId`, `correlationId`, `causationId` opcional, `occurredAt`, `version` e `data`. Payloads são DTOs estáveis; `Money` é serializado como `MoneyProps`.
+  - **Consequências:** o evento de processamento inclui `LOSS`; saldo alterado só produz `WalletBalanceChanged` quando o snapshot realmente muda. Replays idempotentes não criam novos eventos.
+
+## ADR-014 — Separação da entrada SQS e dos eventos de integração
+
+- **Status:** aprovada
+- **Data:** 2026-10-31
+- **Contexto e problema:** a auditoria demonstrou que publicar eventos de integração na FIFO de entrada permitia que o consumer financeiro os removesse sem processá-los, causando perda silenciosa e misturando contratos incompatíveis.
+- **Decisão:** preservar `wager-transactions.fifo` exclusivamente para `WagerTransactionRequested`, manter `wager-transactions-dlq.fifo` como sua DLQ e criar `wager-integration-events.fifo` como destino dos envelopes da Outbox. O README não prescreve uma fila de saída; esta é uma extensão compatível e explicitamente documentada. Não haverá consumer financeiro da fila de saída.
+- **Justificativa:** separa produtores e consumidores por contrato, impede ciclos e mantém a fila de entrada definida pelo desafio. A consistência financeira continua no PostgreSQL, não na FIFO.
+- **Consequências e trade-offs:** consumidores externos devem assinar/ler a fila de saída ou uma camada posterior de fan-out, que está fora do escopo. Envelopes de integração encontrados na fila de entrada são roteados para a DLQ, nunca ACKados silenciosamente.
+
+## ADR-015 — Hash sem metadados de transporte e leases persistentes
+
+- **Status:** aprovada
+- **Data:** 2026-10-31
+- **Decisão:** HTTP e SQS usam a mesma canonização dos campos financeiros; `messageId`, timestamp de transporte e outros metadados não participam do hash. A Inbox continua identificada por `(consumer_name,message_id)`. Outbox e `PENDING_REFERENCE` usam tokens e leases persistidos no PostgreSQL, com renovação periódica e backoff persistido.
+- **Justificativa:** preserva replay idempotente entre redeliveries/envelopes distintos sem relaxar conflito de payload, e permite exclusividade/recuperação entre múltiplas instâncias.
+- **Consequências:** publicação continua at-least-once; falha depois do envio e antes do commit de `published_at` pode produzir duplicata, que consumidores devem tratar de forma idempotente.

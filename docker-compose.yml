@@ -51,6 +51,7 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
       SQS_ENDPOINT: http://localstack:4566
       SQS_MAIN_QUEUE: ${SQS_MAIN_QUEUE:-wager-transactions.fifo}
+      SQS_OUTPUT_QUEUE: ${SQS_OUTPUT_QUEUE:-wager-integration-events.fifo}
       SQS_DLQ: ${SQS_DLQ:-wager-transactions-dlq.fifo}
     ports:
       - "${APP_PORT:-3000}:3000"

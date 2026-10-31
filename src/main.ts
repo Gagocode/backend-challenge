@@ -6,6 +6,7 @@ import { HttpErrorFilter } from './http/error.filter';
 async function bootstrap(): Promise<void> {
   try {
     const app = await NestFactory.create(AppModule);
+    app.enableShutdownHooks(['SIGINT', 'SIGTERM']);
     app.useGlobalFilters(new HttpErrorFilter());
     await app.listen(Number(process.env.PORT ?? 3000));
   } catch (error: unknown) {
