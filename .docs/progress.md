@@ -1,3 +1,32 @@
+# 2026-10-31 14:05:30 -03:00 — Etapa 18: correção do bootstrap e readiness do LocalStack
+
+**O que foi feito:**
+
+- Identificada a causa raiz do bootstrap ausente: `10-create-sqs.sh` usava `#!/bin/bash` e CRLF; a imagem `localstack/localstack:3.8.1` não executava esse shebang no estágio `READY` e registrava `Errno 2`.
+- Corrigido o script existente para `/bin/sh` com LF, execução idempotente e preservação de filas/mensagens existentes. Filas não FIFO falham explicitamente em vez de serem substituídas.
+- Alinhadas as variáveis `SQS_MAIN_QUEUE`, `SQS_DLQ` e `SQS_OUTPUT_QUEUE` entre LocalStack e aplicação no Compose.
+- Reforçada a readiness para validar as três filas FIFO, `ContentBasedDeduplication=false` e a `RedrivePolicy` da fila principal para a DLQ com `maxReceiveCount=5`.
+- Configurada também a `RedriveAllowPolicy` da DLQ para a fila principal, sem remover ou recriar recursos.
+
+**Validação real:**
+
+- Reinício do LocalStack com os volumes existentes executou automaticamente `Ensuring FIFO queues` e `SQS FIFO queues are ready`; o segundo reinício foi idempotente.
+- Encontradas três filas: `wager-transactions.fifo`, `wager-transactions-dlq.fifo` e `wager-integration-events.fifo`; todas FIFO, com deduplicação baseada em conteúdo desabilitada e contagens de mensagens zero.
+- A fila principal confirmou redrive para `wager-transactions-dlq.fifo` após cinco recebimentos; a DLQ confirmou `RedriveAllowPolicy` restrita à fila principal.
+- `bun run test:sqs`: 11 pass, 0 fail, 121 expectativas, contra PostgreSQL e LocalStack reais em schema/filas isolados.
+- `/health/live`: HTTP 200. `/health/ready`: HTTP 200 com PostgreSQL/SQS operacionais; com LocalStack parado, HTTP 503 e `sqs=down`; após restauração, HTTP 200 novamente.
+- `bun run typecheck`, `bun run build` e `git diff --check`: aprovados. Volumes, filas e mensagens não foram removidos; as 43 transações históricas não foram investigadas.
+
+**Arquivos alterados nesta etapa:**
+
+- `docker-compose.yml`
+- `.gitattributes`
+- `docker/localstack/init/ready.d/10-create-sqs.sh`
+- `src/messaging/sqs/sqs-client.ts`
+- `README.md`
+- `ARCHITECTURE.md`
+- `.docs/progress.md`
+
 # 2026-10-31 10:53:19 -03:00 — Etapa 17: auditoria final e preparacao da entrega
 
 **O que foi feito:**

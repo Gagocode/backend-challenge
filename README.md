@@ -90,6 +90,8 @@ docker compose ps
 
 No PowerShell, substitua o primeiro comando por `Copy-Item .env.example .env`. O Compose inicia PostgreSQL, LocalStack e a aplicação. O script de inicialização do LocalStack cria as filas FIFO de entrada, DLQ e saída.
 
+O bootstrap é executado automaticamente no estágio `READY` do LocalStack. Ele usa `/bin/sh` com line endings LF, é idempotente e preserva filas e mensagens existentes; a aplicação só fica pronta quando as três filas FIFO e o redrive da DLQ estão configurados. Os nomes `SQS_MAIN_QUEUE`, `SQS_DLQ` e `SQS_OUTPUT_QUEUE` são compartilhados entre o bootstrap e a aplicação.
+
 Para interromper os containers sem remover os dados persistidos:
 
 ```bash

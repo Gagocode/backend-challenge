@@ -1,0 +1,1 @@
+docker/localstack/init/ready.d/*.sh text eol=lf

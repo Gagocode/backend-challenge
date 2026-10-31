@@ -110,7 +110,7 @@ As unidades são contagens, exceto `wager_outbox_lag_seconds` e `wager_processin
 ## Health checks
 
 - `GET /health/live` retorna sucesso se o processo está vivo e não consulta dependências.
-- `GET /health/ready` consulta PostgreSQL e SQS e retorna status de indisponibilidade quando uma dependência falha.
+- `GET /health/ready` consulta PostgreSQL e SQS e retorna status de indisponibilidade quando uma dependência falha. Para SQS, a sonda exige as filas de entrada, DLQ e saída como FIFO, `ContentBasedDeduplication=false` e valida a `RedrivePolicy` da entrada para a DLQ com cinco recebimentos.
 
 Os endpoints são públicos. Readiness não encerra o processo: permite que o ambiente de execução retire a instância do tráfego e tente novamente depois.
 
@@ -127,6 +127,8 @@ Migrações são executadas explicitamente por `bun run migration:run`. A aplica
 ## Execução local
 
 Docker Compose inicia a aplicação, PostgreSQL e LocalStack. O LocalStack cria a fila FIFO de entrada, a DLQ e a fila FIFO de saída. A aplicação runtime é construída a partir de `dist`; migrações devem ser executadas pelo host com Bun e `DATABASE_URL` configurados.
+
+O bootstrap em `docker/localstack/init/ready.d/10-create-sqs.sh` é executado no estágio `READY`, usa `/bin/sh` em formato LF e atualiza somente atributos configuráveis quando as filas já existem. A fila principal recebe a `RedrivePolicy` para a DLQ e a DLQ restringe o redrive à fila principal; nenhum recurso é removido durante reinícios.
 
 Parâmetros de polling, batch, leases, retry, TTL e workers são configuráveis por ambiente e possuem defaults no código. A configuração completa de desenvolvimento está em [.env.example](.env.example).
 
