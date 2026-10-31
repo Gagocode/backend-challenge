@@ -12,16 +12,17 @@ import { FailureCode, WagerTransactionKind, WagerTransactionStatus } from '../sr
 import { LedgerDirection } from '../src/domain/wallet/wallet-ledger-entry';
 
 const databaseUrl = process.env.DATABASE_URL;
-const suite = databaseUrl ? describe : describe.skip;
+if (!databaseUrl) throw new Error('DATABASE_URL is required for PostgreSQL integration tests; use bun run test:unit for infrastructure-free tests');
+if (!process.env.TEST_DATABASE_SCHEMA) throw new Error('TEST_DATABASE_SCHEMA is required; use bun run test:integration to isolate PostgreSQL data');
 const brl = (amount: string): Money => Money.from({ amount, currency: 'BRL' });
 
-suite('financial application use cases against real PostgreSQL', () => {
+describe('financial application use cases against real PostgreSQL', () => {
   let dataSource: DataSource;
   let createWallet: CreateWalletUseCase;
   let processTransaction: ProcessWagerTransactionUseCase;
 
   beforeAll(async () => {
-    dataSource = new DataSource(createDatabaseOptions({ DATABASE_URL: databaseUrl }));
+    dataSource = new DataSource(createDatabaseOptions({ ...process.env, DATABASE_URL: databaseUrl }));
     await dataSource.initialize();
     await dataSource.runMigrations({ transaction: 'all' });
     const unitOfWork = new TypeOrmFinancialUnitOfWork(dataSource);

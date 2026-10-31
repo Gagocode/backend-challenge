@@ -124,6 +124,10 @@ Docker Compose inicia a aplicação, PostgreSQL e LocalStack. O LocalStack cria 
 
 Parâmetros de polling, batch, leases, retry, TTL e workers são configuráveis por ambiente e possuem defaults no código. A configuração completa de desenvolvimento está em [.env.example](.env.example).
 
+### Testes de integração
+
+O runner de integração exige PostgreSQL e LocalStack reais. Cada execução cria um schema PostgreSQL com `search_path` exclusivo, migrations versionadas e filas FIFO próprias (entrada, DLQ e saída). Ao terminar, remove somente o schema e as filas criados pelo runner; volumes, banco público e filas de desenvolvimento não são tocados. A ausência de `DATABASE_URL`, `TEST_DATABASE_SCHEMA` ou das filas isoladas causa falha explícita. Isso impede que um publisher ou consumer externo compartilhe a Outbox do teste.
+
 ## Evolução documentada
 
 As primeiras decisões registradas descreviam uma etapa de fundação em que HTTP e SQS ainda eram propostas. Essas decisões continuam preservadas para explicar o raciocínio histórico; a implementação posterior tornou efetivos os controllers, a mensageria, a Inbox/Outbox, a recuperação e a observabilidade. Quando um registro histórico disser que um componente não existia, ele deve ser lido como o estado daquela etapa, não como a descrição atual.

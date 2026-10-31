@@ -13,13 +13,14 @@ import { WagerTransactionStatus } from '../src/domain/wager-transaction/wager-tr
 import { OutboxPublisher } from '../src/messaging/sqs/outbox.publisher';
 
 const databaseUrl = process.env.DATABASE_URL;
-const suite = databaseUrl ? describe : describe.skip;
+if (!databaseUrl) throw new Error('DATABASE_URL is required for PostgreSQL integration tests; use bun run test:unit for infrastructure-free tests');
+if (!process.env.TEST_DATABASE_SCHEMA) throw new Error('TEST_DATABASE_SCHEMA is required; use bun run test:integration to isolate PostgreSQL data');
 
-suite('Inbox and Outbox persistence against real PostgreSQL', () => {
+describe('Inbox and Outbox persistence against real PostgreSQL', () => {
   let dataSource: DataSource;
 
   beforeAll(async () => {
-    dataSource = new DataSource(createDatabaseOptions({ DATABASE_URL: databaseUrl }));
+    dataSource = new DataSource(createDatabaseOptions({ ...process.env, DATABASE_URL: databaseUrl }));
     await dataSource.initialize();
     await dataSource.runMigrations({ transaction: 'all' });
   });

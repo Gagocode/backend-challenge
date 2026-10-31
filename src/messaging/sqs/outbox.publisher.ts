@@ -29,6 +29,7 @@ export class OutboxPublisher implements OnModuleInit, OnModuleDestroy {
     const leaseMs = Number(process.env.OUTBOX_LEASE_MS ?? 30000);
     const batchSize = Number(process.env.OUTBOX_BATCH_SIZE ?? 10);
     const claimed = await this.dataSource.transaction(async (manager) => new TypeOrmOutboxRepository(manager).claimDue(batchSize, now, leaseMs));
+    if (claimed.length === 0) this.metrics.outboxLag(0);
     for (const message of claimed) this.metrics.outboxLag(Math.max(0, now.getTime() - message.occurredAt.getTime()));
     let published = 0;
     for (const message of claimed) {
@@ -58,6 +59,7 @@ export class OutboxPublisher implements OnModuleInit, OnModuleDestroy {
         clearInterval(renewalInterval);
       }
     }
+    if (claimed.length > 0 && published === claimed.length) this.metrics.outboxLag(0);
     return published;
   }
 

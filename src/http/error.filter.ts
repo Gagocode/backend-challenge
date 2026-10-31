@@ -4,6 +4,28 @@ import { InvalidWagerTransactionError } from '../domain/wager-transaction/wager-
 import { FinancialConflictError, InvalidFinancialOperationError, WalletNotFoundError } from '../application/financial-errors';
 import { StructuredLogger, safeCorrelationId } from '../observability/structured-logger';
 
+const transientPostgresCodes = new Set([
+  '08000', '08001', '08003', '08004', '08006', '08007', '08P01',
+  '40001', '40P01', '53300', '55P03', '57P01', '57P02', '57P03',
+]);
+
+const databaseCode = (error: unknown): string | undefined => {
+  if (!error || typeof error !== 'object') return undefined;
+  const candidate = error as { code?: unknown; driverError?: { code?: unknown } };
+  if (typeof candidate.code === 'string') return candidate.code;
+  return typeof candidate.driverError?.code === 'string' ? candidate.driverError.code : undefined;
+};
+
+export const isTransientInfrastructureError = (error: unknown): boolean => {
+  if (error && typeof error === 'object') {
+    const candidate = error as { code?: unknown; errno?: unknown; driverError?: { code?: unknown; errno?: unknown } };
+    const transportCodes = [candidate.code, candidate.errno, candidate.driverError?.code, candidate.driverError?.errno];
+    if (transportCodes.some((code) => code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'ETIMEDOUT')) return true;
+  }
+  const code = databaseCode(error);
+  return code !== undefined && transientPostgresCodes.has(code);
+};
+
 @Catch()
 export class HttpErrorFilter implements ExceptionFilter {
   public constructor(private readonly logger = new StructuredLogger()) {}
@@ -21,8 +43,8 @@ export class HttpErrorFilter implements ExceptionFilter {
     if (error instanceof WalletNotFoundError) { status = 404; code = 'NOT_FOUND'; message = error.message; }
     else if (error instanceof FinancialConflictError) { status = 409; code = 'CONFLICT'; message = error.message; }
     else if (error instanceof InvalidMoneyError || error instanceof InvalidWagerTransactionError || error instanceof InvalidFinancialOperationError) { status = 422; code = 'BUSINESS_RULE_REJECTED'; message = error.message; }
-    else if (error && typeof error === 'object' && ((error as { code?: string }).code === 'ECONNREFUSED' || (error as { driverError?: { code?: string } }).driverError?.code === '57P01')) { status = 503; code = 'INFRASTRUCTURE_UNAVAILABLE'; message = 'Required infrastructure is unavailable'; }
+    else if (isTransientInfrastructureError(error)) { status = 503; code = 'INFRASTRUCTURE_UNAVAILABLE'; message = 'Required infrastructure is temporarily unavailable'; }
     this.logger.error('http_request_failed', { correlationId, status: String(status), errorCode: code, component: 'http' });
-    response.status(status).json({ statusCode: status, code, message });
+    response.status(status).json({ statusCode: status, code, message, ...(status === 503 ? { retryable: true } : {}) });
   }
 }

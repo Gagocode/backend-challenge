@@ -18,4 +18,14 @@ describe('createDatabaseOptions', () => {
   test('requires a database URL', () => {
     expect(() => createDatabaseOptions({})).toThrow('DATABASE_URL is required');
   });
+
+  test('restricts integration connections to a validated execution schema', () => {
+    const options = createDatabaseOptions({
+      DATABASE_URL: 'postgresql://user:password@localhost:5432/database',
+      TEST_DATABASE_SCHEMA: 'it_abc123',
+    }) as PostgresConnectionOptions;
+
+    expect((options.extra as { options: string }).options).toBe('-c search_path=it_abc123,public');
+    expect(() => createDatabaseOptions({ DATABASE_URL: 'postgresql://user:password@localhost:5432/database', TEST_DATABASE_SCHEMA: 'bad-schema' })).toThrow('safe PostgreSQL schema identifier');
+  });
 });

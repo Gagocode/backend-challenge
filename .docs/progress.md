@@ -1,5 +1,20 @@
 # Diário de progresso
 
+## 2026-10-31 03:34:49 — Etapa 15: hardening estrutural e isolamento da suíte
+
+**O que foi feito:**
+
+- Separados comandos unitários, integração completa, regressão SQS e ciclo reversível de migrations; testes de integração agora exigem PostgreSQL e LocalStack e falham explicitamente quando a infraestrutura não está disponível.
+- O runner cria schema PostgreSQL e filas FIFO exclusivos por execução, desabilita workers externos, executa a suíte e remove somente os recursos criados por ele.
+- Corrigido o teste SQS para identificar o `transactionId` da operação testada, com filas e Outbox isolados; adicionadas validações de mensagens SQS, UUIDs, enums, Money e propriedades inesperadas.
+- Criada migration reversível com chaves compostas para proteger associações wallet/player/currency e transaction/wallet. As FKs são `NOT VALID` para preservar dados legados existentes, mas rejeitam novas associações inconsistentes.
+- Corrigidos o mapeamento de falhas transitórias para HTTP 503 genérico/retryable e o reset do gauge de Outbox lag quando não há pendências.
+
+**Validação:**
+
+- `bun run test:unit` executa sem infraestrutura externa; `bun run test:integration` e `bun run test:sqs` usam recursos efêmeros exclusivos; `bun run test:migrations` valida apply/revert/reapply em schema isolado.
+- Nenhum volume ou dado do banco principal foi removido; não foi criado commit ou merge.
+
 ## 2026-10-31 03:00:49 -03:00 — Correção e padronização da documentação do projeto
 
 **O que foi feito:**

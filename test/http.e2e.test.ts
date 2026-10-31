@@ -2,7 +2,9 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { DataSource } from 'typeorm';
 import { createDatabaseOptions } from '../src/database/database.config';
 
-const databaseUrl = process.env.DATABASE_URL ?? 'postgresql://wager:change-me-local-only@127.0.0.1:5432/wager';
+const databaseUrl = process.env.DATABASE_URL;
+if (!databaseUrl) throw new Error('DATABASE_URL is required for HTTP integration tests; use bun run test:unit for infrastructure-free tests');
+if (!process.env.TEST_DATABASE_SCHEMA) throw new Error('TEST_DATABASE_SCHEMA is required; use bun run test:integration to isolate PostgreSQL data');
 const port = 32000 + (process.pid % 1000);
 const baseUrl = `http://127.0.0.1:${port}`;
 let application: Bun.Subprocess;
@@ -28,7 +30,7 @@ const submit = async (wallet: Record<string, unknown>, overrides: Record<string,
 beforeAll(async () => {
   database = new DataSource(createDatabaseOptions({ ...process.env, DATABASE_URL: databaseUrl }));
   await database.initialize();
-  application = Bun.spawn([process.execPath, 'src/main.ts'], { env: { ...process.env, DATABASE_URL: databaseUrl, PORT: String(port), NODE_ENV: 'test', SQS_ENDPOINT: 'http://127.0.0.1:4566', SQS_OUTPUT_QUEUE: 'wager-integration-events.fifo', MESSAGING_WORKERS_ENABLED: 'false' }, stdout: 'pipe', stderr: 'pipe' });
+  application = Bun.spawn([process.execPath, 'src/main.ts'], { env: { ...process.env, DATABASE_URL: databaseUrl, PORT: String(port), NODE_ENV: 'test', MESSAGING_WORKERS_ENABLED: 'false' }, stdout: 'pipe', stderr: 'pipe' });
   for (let attempt = 0; attempt < 300; attempt += 1) {
     try { const health = await fetch(`${baseUrl}/health/live`); if (health.ok) return; } catch { /* application is still starting */ }
     await Bun.sleep(100);
