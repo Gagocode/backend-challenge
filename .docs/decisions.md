@@ -165,3 +165,11 @@ Cada item deverá registrar contexto/problema, alternativas, decisão, justifica
 - **Decisão:** HTTP e SQS usam a mesma canonização dos campos financeiros; `messageId`, timestamp de transporte e outros metadados não participam do hash. A Inbox continua identificada por `(consumer_name,message_id)`. Outbox e `PENDING_REFERENCE` usam tokens e leases persistidos no PostgreSQL, com renovação periódica e backoff persistido.
 - **Justificativa:** preserva replay idempotente entre redeliveries/envelopes distintos sem relaxar conflito de payload, e permite exclusividade/recuperação entre múltiplas instâncias.
 - **Consequências:** publicação continua at-least-once; falha depois do envio e antes do commit de `published_at` pode produzir duplicata, que consumidores devem tratar de forma idempotente.
+## ADR-016 - Observabilidade operacional sem infraestrutura adicional
+
+- **Status:** aprovada - 2026-10-31.
+- **Contexto:** a secao 12 exige logs estruturados, transacoes por status, duplicatas, retries, DLQ, conflitos de lock, outbox lag, latencia e health separado, mas OpenTelemetry, Prometheus e dashboards sao opcionais.
+- **Decisao:** usar `StructuredLogger` com allowlist de campos e `MetricsService` em memoria, expondo `GET /metrics` no formato Prometheus. Nenhum identificador financeiro ou payload sera label; valores monetarios nao serao logados nem medidos.
+- **Semantica:** status e contado somente para resultado financeiro novo; replay HTTP e redelivery Inbox processada contam como duplicata, sem repetir efeito. Lag e latencia usam segundos; retry, DLQ, lock e divergencia usam contadores.
+- **Correlacao:** IDs externos sao validados por formato; HTTP propaga o ID para o caso de uso e Outbox, e SQS o propaga no envelope, usando `messageId` como fallback. `causationId` identifica a mensagem de origem.
+- **Consequencias:** a aplicacao nao depende de exporter ou servidor adicional e continua simples de operar. O endpoint nao oferece retencao nem alertas; redrive automatico do SQS so pode ser observado por ferramentas externas.

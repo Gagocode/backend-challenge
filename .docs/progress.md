@@ -448,3 +448,31 @@ A persistência financeira da Etapa 9 foi validada contra PostgreSQL real. Não 
 - `bun run typecheck`, `bun run build`, `bun test` com PostgreSQL real e `git diff --check` aprovados.
 - Resultado final: 60 testes pass, 0 fail e 242 expectativas.
 - App final reconstruído e healthy; readiness confirmou PostgreSQL/SQS `up`; nenhum commit, merge ou alteração de `develop`/`main` foi feito.
+## 2026-10-31 - Etapa 13: observabilidade e metricas operacionais
+
+**O que foi feito:**
+
+- Criado `StructuredLogger`, com saida JSON em uma linha, allowlist de contexto e filtragem de payloads financeiros, credenciais, tokens e mensagens de erro livres.
+- Instrumentados recebimento HTTP, processamento/rejeicao/replay financeiro, Outbox, falhas de publish, consumer SQS, redelivery, retry, DLQ, worker de referencias, reconciliacao e readiness.
+- Criado `MetricsService` sem dependencia externa e endpoint publico `GET /metrics` no formato Prometheus 0.0.4.
+- Implementadas metricas de transacoes por status, duplicatas, retries, DLQ explicita, conflitos de lock, outbox lag, latencia de processamento e divergencia de reconciliacao.
+- Labels sao controladas e nao carregam walletId, transactionId, messageId ou valores monetarios.
+- Correlation ID HTTP/SQS passou a ser validado e propagado pelo caso de uso, Outbox, Inbox, publisher, consumer e worker; SQS usa messageId somente como fallback.
+- Corrigido o worker de referencias para persistir o proximo retry/backoff quando a referencia ainda nao existe, sem contar esse retry como nova duplicata financeira.
+- Readiness permanece publico e separado: liveness nao acessa dependencias; readiness verifica PostgreSQL e SQS e retorna 503 sem derrubar o processo.
+
+**Testes e validacao:**
+
+- Adicionado `test/observability.test.ts`, cobrindo formato JSON, correlation ID, ausencia de dados sensiveis, contadores, labels, lag, latencia, readiness com dependencias disponiveis/indisponiveis e liveness independente.
+- `bun run typecheck` aprovado.
+- `bun run build` aprovado.
+- `bun test` sem dependencias reais revelou apenas o comportamento ambiental esperado: E2E exige PostgreSQL; os testes unitarios novos passaram.
+- PostgreSQL real e LocalStack reais foram iniciados pelo Compose sem remover volumes; migrations pendentes: nenhuma.
+- Suite real com PostgreSQL/LocalStack: 71 pass, 1 falha inicial por dois consumidores concorrendo na mesma fila (container app existente); apos parar temporariamente somente esse container, `test/sqs.regression.integration.test.ts`: 1 pass.
+- `git diff --check` aprovado.
+
+**Limitacoes conhecidas:**
+
+- A metrica de DLQ contabiliza envios explicitos da aplicacao; o redrive automatico do SQS precisa de observacao externa.
+- As metricas ficam em memoria e reiniciam com o processo; nao ha Prometheus/Grafana/OTel por nao serem necessarios ao escopo.
+- O `README.md` da raiz esta vazio neste checkout; a secao 12 foi auditada em `.docs/challenge.md`, que e a copia disponivel dos requisitos.

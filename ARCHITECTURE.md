@@ -1,5 +1,34 @@
 # Arquitetura
 
+## Observabilidade - Etapa 13
+
+### Logs estruturados
+
+`src/observability/structured-logger.ts` e o unico ponto de emissao dos logs da aplicacao. Cada registro e uma linha JSON com `timestamp`, `level`, `event` e contexto permitido. Quando disponiveis, os campos sao `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`, `eventId`, `consumerName` e `attempt`, alem de `status`, `reason`, `component`, `errorCode`, `durationMs`, `lagMs` e `delayMs`.
+
+O logger usa allowlist: payload financeiro, `Money`, valores monetarios, credenciais, tokens e mensagens de erro livres nao sao serializados. `info` registra recebimento/processamento/replay; `warn` registra rejeicao, redelivery, DLQ e divergencia; `error` registra falhas de infraestrutura, retry e readiness. Correlation IDs externos so sao aceitos no formato `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`; valores invalidos recebem um ID local.
+
+### Metricas
+
+`GET /metrics` expoe texto Prometheus `0.0.4`, sem autenticacao:
+
+- `wager_transactions_total{status}`: contador por status (`PENDING`, `PENDING_REFERENCE`, `PROCESSED`, `REJECTED`, `FAILED`), uma unidade por resultado novo, nao por replay.
+- `wager_duplicates_total{source}`: replay/duplicata detectado em `http` ou `sqs`.
+- `wager_retries_total{component,reason}`: retry de `consumer`, `outbox_publisher` ou `pending_reference`; motivo `business` ou `infrastructure`.
+- `wager_dlq_messages_total{reason}`: mensagens explicitamente enviadas para DLQ. Redrive automatico do SQS nao e observado pelo processo.
+- `wager_lock_conflicts_total{component}`: conflitos PostgreSQL de lock/deadlock/serializacao.
+- `wager_outbox_lag_seconds`: gauge do lag entre `occurredAt` e claim da Outbox, em segundos.
+- `wager_processing_duration_seconds{source,status}`: histograma da duracao do processamento financeiro, em segundos.
+- `wager_reconciliation_divergences_total`: divergencias de reconciliacao.
+
+As labels sao conjuntos fechados e nao contem `walletId`, `transactionId`, `messageId`, valores monetarios ou payloads. HTTP replay e redelivery que encontra Inbox processada nao incrementam status nem duplicam efeitos financeiros.
+
+### Correlacao e health
+
+HTTP define a correlacao validada; o caso de uso grava-a nos eventos Outbox. O envelope SQS propaga `correlationId` validado e usa `messageId` somente como fallback. Consumer, Inbox, worker de referencia, publisher e eventos de integracao mantem a cadeia, enquanto `causationId` identifica a mensagem que disparou o processamento.
+
+`GET /health/live` verifica somente que o processo responde. `GET /health/ready` executa `SELECT 1` no PostgreSQL e `GetQueueAttributes`/existencia das filas SQS; falha retorna `503` sem encerrar o processo. Ambos permanecem publicos. As metricas sao mantidas em memoria; retencao e alertas externos exigem um scraper fora do escopo.
+
 ## Estado e convenções
 
 | Categoria | Estado |

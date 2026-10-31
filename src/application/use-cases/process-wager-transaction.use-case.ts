@@ -6,6 +6,8 @@ import { LedgerDirection } from '../../domain/wallet/wallet-ledger-entry';
 import type { FinancialTransactionContext, FinancialUnitOfWork } from '../ports/financial-repositories';
 import { FinancialConflictError, InvalidFinancialOperationError, WalletNotFoundError } from '../financial-errors';
 import { enqueueFinancialEvents } from '../messaging/enqueue-financial-events';
+import { MetricsService } from '../../observability/metrics.service';
+import { StructuredLogger } from '../../observability/structured-logger';
 
 export interface ProcessWagerTransactionCommand {
   id?: string;
@@ -24,6 +26,7 @@ export interface ProcessWagerTransactionCommand {
   correlationId?: string;
   causationId?: string;
   expirePendingReference?: boolean;
+  source?: 'http' | 'sqs' | 'pending_reference' | 'system';
 }
 
 export interface ProcessWagerTransactionResult {
@@ -40,13 +43,20 @@ const isUniqueViolation = (error: unknown): boolean => {
 };
 
 export class ProcessWagerTransactionUseCase {
-  public constructor(private readonly unitOfWork: FinancialUnitOfWork) {}
+  public constructor(private readonly unitOfWork: FinancialUnitOfWork, private readonly logger?: StructuredLogger, private readonly metrics?: MetricsService) {}
 
   public async execute(command: ProcessWagerTransactionCommand): Promise<ProcessWagerTransactionResult> {
+    const startedAt = Date.now();
+    const source = command.source ?? 'system';
     try {
-      return await this.unitOfWork.execute((context) => this.executeWithinTransaction(command, context));
+      const result = await this.unitOfWork.execute((context) => this.executeWithinTransaction(command, context));
+      return this.observe(result, command, source, startedAt);
     } catch (error: unknown) {
-      if (!isUniqueViolation(error)) throw error;
+      if (!isUniqueViolation(error)) {
+        if (this.isLockConflict(error)) this.metrics?.lockConflict('financial_processing');
+        this.logger?.error('financial_processing_failed', { correlationId: command.correlationId, providerId: command.providerId, walletId: command.walletId, component: 'financial_processing', errorCode: this.errorCode(error) });
+        throw error;
+      }
       const replay = await this.unitOfWork.execute(async ({ transactions, wallets }) => {
         const existing = await transactions.findByProviderAndIdempotencyKey(command.providerId, command.idempotencyKey);
         if (existing) {
@@ -59,9 +69,32 @@ export class ProcessWagerTransactionUseCase {
         if (external) throw new FinancialConflictError('External transaction already exists');
         return undefined;
       });
-      if (replay) return replay;
+      if (replay) return this.observe(replay, command, source, startedAt);
       throw error;
     }
+  }
+
+  public observe(result: ProcessWagerTransactionResult, command: ProcessWagerTransactionCommand, source = command.source ?? 'system', startedAt = Date.now()): ProcessWagerTransactionResult {
+    if (result.idempotentReplay) {
+      if (source !== 'pending_reference') this.metrics?.duplicate(source);
+      this.logger?.info('financial_transaction_replay', { correlationId: command.correlationId, transactionId: result.transaction.id, walletId: result.wallet.id, providerId: result.transaction.providerId, status: result.transaction.status, source });
+    } else {
+      this.metrics?.transaction(result.transaction.status, source);
+      if (result.transaction.status === WagerTransactionStatus.REJECTED) {
+        this.logger?.warn('financial_transaction_rejected', { correlationId: command.correlationId, transactionId: result.transaction.id, walletId: result.wallet.id, providerId: result.transaction.providerId, status: result.transaction.status, errorCode: result.transaction.failureCode, source });
+      } else {
+        this.logger?.info('financial_transaction_processed', { correlationId: command.correlationId, transactionId: result.transaction.id, walletId: result.wallet.id, providerId: result.transaction.providerId, status: result.transaction.status, source });
+      }
+    }
+    this.metrics?.processingDuration(Date.now() - startedAt, source, result.transaction.status);
+    return result;
+  }
+
+  private errorCode(error: unknown): string { return error instanceof Error ? error.constructor.name.slice(0, 80) : 'UnknownError'; }
+  private isLockConflict(error: unknown): boolean {
+    if (!error || typeof error !== 'object') return false;
+    const candidate = error as { code?: string; driverError?: { code?: string } };
+    return ['55P03', '40P01', '40001'].includes(candidate.code ?? candidate.driverError?.code ?? '');
   }
 
   public async executeWithinTransaction(command: ProcessWagerTransactionCommand, context: FinancialTransactionContext): Promise<ProcessWagerTransactionResult> {
