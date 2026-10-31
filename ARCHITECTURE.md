@@ -1,163 +1,131 @@
-# Arquitetura
+# Arquitetura do Distributed Wagering Processor
 
-## Estado e convenções
-
-| Categoria | Estado |
-|---|---|
-| Requisitos do desafio | Definidos no [README.md](README.md) e copiados fielmente em [.docs/challenge.md](.docs/challenge.md). |
-| Propostas arquiteturais | Hipóteses abaixo, ainda não aprovadas nem implementadas. |
-| Decisões aprovadas | Preservação do README como fonte de verdade, separação documental e ADR-003 sobre TypeORM, migrações explícitas e readiness. |
-| Funcionalidades implementadas e validadas | Bootstrap NestJS, conexão TypeORM, readiness separado, migrações reversíveis, domínio financeiro, persistência financeira e casos de uso transacionais; controllers e mensageria permanecem fora do escopo. |
+Este documento descreve o estado implementado na branch de observabilidade. O desafio original e o histórico de decisões permanecem em [.docs/challenge.md](.docs/challenge.md) e [.docs/decisions.md](.docs/decisions.md).
 
 ## Visão geral
 
-O desafio requer um serviço financeiro distribuído para transações de apostas por HTTP e SQS. Correção financeira, concorrência entre instâncias, idempotência persistente e recuperação após falhas são requisitos centrais. Em qualquer divergência, o README oficial prevalece.
+O sistema recebe transações de wagering por HTTP ou SQS, aplica regras financeiras sobre uma carteira PostgreSQL e produz eventos de integração de forma assíncrona. A consistência financeira, a idempotência e a publicação da intenção de evento são tratadas na mesma transação relacional.
 
-## Requisitos arquiteturais definidos
+```text
+HTTP / SQS de entrada
+          |
+          v
+Controllers / Consumer
+          |
+          v
+Casos de uso financeiros
+          |
+          v
+FinancialUnitOfWork
+   |       |        |        |
+wallet  ledger  idempotency inbox/outbox
+          |
+          v
+   PostgreSQL transaction
+          |
+          v
+Outbox Publisher -> SQS de saída
 
-- Bun 1.x, TypeScript estrito, NestJS, PostgreSQL, SQS por LocalStack/MiniStack, Docker Compose e migrations reversíveis/versionadas.
-- MikroORM (preferencial) ou TypeORM; nenhum outro ORM.
-- Dinheiro exato, sem `number`/`float`/`double`; valores contratuais como strings decimais.
-- Invariantes também no schema: unicidade, imutabilidade e não-negatividade.
-- Ledger imutável e saldo materializado consistente; sem saldo negativo.
-- Wallet, ledger, inbox, outbox e evento de integração atômicos na mesma transação SQL quando aplicáveis.
-- Entrega at-least-once, múltiplas instâncias e tolerância a duplicatas; FIFO não é a garantia final.
-- Eventos só após commit; testes reais de PostgreSQL, SQS e concorrência.
+PendingReferenceWorker -> casos de uso financeiros
+```
 
-## Componentes previstos — propostas
+## Componentes implementados
 
-| Componente | Responsabilidade | Estado |
-|---|---|---|
-| API HTTP | Wallets, transações, consultas, reconciliação e health checks. | Implementado na Etapa 11 |
-| Casos de uso/domínio | Regras, Money, Wallet, transação, ledger e orquestração. | Domínio e casos de uso de wallet/transação implementados e testados |
-| PostgreSQL | Estado, constraints, índices, inbox e outbox. | Wallets, transações e ledger persistidos; Inbox/Outbox não implementados |
-| Consumidor SQS | Reusar caso de uso, registrar inbox e fazer ack após commit. | Não implementado |
-| Worker de referências | Reprocessar `PENDING_REFERENCE`. | Não implementado |
-| Publisher outbox | Publicar pendências concorrentemente e recuperar falhas. | Não implementado |
-| Observabilidade | Logs JSON, métricas e health checks. | Não implementado |
-| Autenticação | IdP externo ou ponto de extensão documentado. | Não decidido |
+| Componente | Responsabilidade |
+| --- | --- |
+| Controllers HTTP | Validação de entrada, headers, códigos HTTP e correlação. |
+| Casos de uso | Criação de carteira, transação, consulta, ledger e reconciliação. |
+| Domínio financeiro | Money em centavos, Wallet, WagerTransaction e regras por tipo de operação. |
+| FinancialUnitOfWork | Atomicidade entre carteira, ledger, idempotência, Inbox e Outbox. |
+| Repositórios PostgreSQL | Persistência de carteiras, transações, ledger, idempotência, Inbox, Outbox e pendências. |
+| OutboxPublisher | Claim com lease, publicação SQS, retry e backoff. |
+| SQS consumer | Recebimento, validação, processamento e ACK após commit. |
+| PendingReferenceWorker | Retentativa de referências pendentes com lease, backoff e TTL. |
+| Health checks | Liveness independente e readiness de PostgreSQL/SQS. |
+| Observabilidade | Logs JSON estruturados e métricas Prometheus em memória. |
 
-## Fluxo esperado — proposta
+## Organização do código
 
-1. HTTP ou SQS valida e normaliza a entrada.
-2. O caso de uso calcula o hash do payload de negócio e verifica idempotência persistente.
-3. Uma transação SQL coordena a wallet, persiste a transação, saldo/ledger, inbox (SQS) e outbox.
-4. Só após commit ocorre resposta HTTP ou ack da mensagem.
-5. Publisher entrega eventos da outbox; consumidores devem suportar duplicatas.
-6. Referência ausente fica `PENDING_REFERENCE` e é reprocessada por worker.
+- `src/domain`: entidades, value objects e regras puras do domínio.
+- `src/application`: casos de uso, portas e DTOs internos.
+- `src/persistence`: entidades TypeORM, repositórios e unidade de trabalho.
+- `src/messaging`: clientes SQS, publisher, consumer e workers.
+- `src/http`: controllers, pipes, health checks e filtros de exceção.
+- `src/observability`: logger estruturado, serviço de métricas e controller `/metrics`.
+- `src/database/migrations`: evolução do schema PostgreSQL.
 
-Este fluxo não está implementado; coordenação, ordenamento e políticas exatas dependem das decisões pendentes.
+## Fluxo financeiro
 
-## Estratégias propostas, não aprovadas
+1. O controller ou consumer valida o envelope e cria/propaga um `correlationId` validado.
+2. O caso de uso identifica a transação por idempotência e pelas chaves externas do provedor.
+3. A `FinancialUnitOfWork` abre uma transação PostgreSQL.
+4. A carteira é bloqueada com lock pessimista de linha.
+5. A regra da operação é aplicada; o saldo e o ledger são atualizados quando a operação é aceita.
+6. A transação idempotente é registrada, juntamente com Inbox e Outbox quando aplicável.
+7. O commit confirma a operação. O SQS consumer só remove a mensagem depois dessa confirmação.
 
-### Consistência financeira
+Valores monetários são representados como inteiros de centavos e serializados com duas casas decimais. O ledger é imutável. Constraints e índices PostgreSQL apoiam a unicidade e a consistência.
 
-Usar a wallet como unidade de consistência e gravar mudança de saldo, ledger e transação em uma transação SQL. Constraints devem reforçar invariantes. A estratégia concorrente concreta ainda não foi escolhida.
+## Idempotência e concorrência
 
-### Concorrência e idempotência
+Repetições com a mesma chave válida retornam o resultado persistido sem reaplicar o efeito financeiro. Uma mesma chave usada com dados incompatíveis gera conflito de idempotência. No SQS, o Inbox e as chaves persistidas tornam o efeito idempotente mesmo quando a mensagem é redeliverada.
 
-Garantias persistentes do PostgreSQL devem resolver idempotência, e o controle deve ser por `walletId`, preservando paralelismo entre wallets. Lock pessimista, lock otimista com retry limitado e update condicionado permanecem alternativas. Canonização e algoritmo do hash também estão pendentes.
+O lock da carteira serializa alterações concorrentes do mesmo agregado. Conflitos ou falhas transitórias de lock não enfraquecem as garantias financeiras: a transação é revertida e pode ser tentada novamente conforme o fluxo responsável.
 
-### Processamento, testes e observabilidade
+## Mensageria
 
-API e SQS devem reutilizar o mesmo caso de uso, como exige o desafio; a semântica síncrona/assíncrona e os status HTTP precisam ser decididos. Os testes futuros devem cobrir unidade, integração real, paralelismo, redelivery, crash, retry/DLQ, outbox e fora de ordem. Logs estruturados sem dados sensíveis, métricas exigidas e liveness/readiness são requisitos, mas biblioteca/exportação/alertas ainda não foram definidos.
+O contrato de entrada usa mensagens FIFO com `messageId`, `type`, `occurredAt`, `correlationId` opcional e `data`. O consumer valida tipos e dados antes de invocar o caso de uso.
 
-### Segurança e autenticação
+O caminho de saída é:
 
-Autenticação é opcional e não pontua. Se adotada, exige IdP externo; health fica aberto e SQS é canal interno confiável, sem dispensar validações de domínio. A decisão está pendente.
+```text
+financial transaction -> outbox row -> claim/lease -> SQS output FIFO
+```
 
-## Persistência financeira — Etapa 9
+O publisher usa leases para permitir recuperação após interrupção de processo, limita o lote e aplica backoff. Mensagens inválidas são enviadas à DLQ de entrada. Falhas transitórias permanecem disponíveis para redelivery; o redrive automático após o limite configurado é responsabilidade do SQS.
 
-As tabelas `wallets`, `wager_transactions` e `wallet_ledger_entries` são criadas por migração reversível. Identificadores são UUID; `NUMERIC(20,2)` é usado para saldo, movimento e snapshots do ledger, e o driver TypeORM é tratado como `string`. O mapeamento transforma essa string em `Money.from({ amount, currency })`; a leitura do agregado usa `Wallet.rehydrate`, `WagerTransaction.rehydrate` e `WalletLedgerEntry.rehydrate`, sem decorators no domínio.
+Quando uma operação depende de outra transação ainda ausente, ela fica em `PENDING_REFERENCE`. O worker retoma a pendência até o TTL configurado; expirado esse prazo, a operação não é aplicada silenciosamente.
 
-Constraints principais: `player_id + currency` único; `provider_id + external_transaction_id` único; idempotência única por `provider_id + idempotency_key`; enums de kind/status/direction; moeda ISO de três letras; valores não negativos; FKs de transação e ledger para wallet; FK opcional de referência para transação; e no máximo um lançamento por `(transaction_id, wallet_id)`. FKs compostas também impedem moeda divergente da wallet. Índices cobrem wallet/status, provider/status, referência e consultas de ledger por wallet/tempo. Um índice parcial impede duas reversões do mesmo tipo para a mesma referência.
+## Observabilidade e correlação
 
-O ledger é append-only: trigger PostgreSQL rejeita `UPDATE` e `DELETE`, e outro trigger verifica a aritmética `DEBIT`/`CREDIT` na inserção. A alteração de wallet, transação e lançamento deve ser feita pelo futuro caso de uso na mesma transação SQL. O repositório de wallet disponibiliza `FOR UPDATE` pessimista por linha, deixando wallets distintas em paralelo e evitando lost update entre instâncias.
+O logger emite uma linha JSON por evento operacional relevante e usa uma lista controlada de campos. Os campos de correlação são incluídos quando disponíveis: `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`, `eventId`, `consumerName` e `attempt`. Payloads completos, dinheiro, credenciais, tokens e mensagens de erro potencialmente sensíveis não são registrados.
 
-Contratos estão em `src/application/ports`; implementações TypeORM ficam em `src/persistence/repositories`; entidades e mappers são infraestrutura. Nenhum controller, Inbox, Outbox, consumidor SQS ou processamento de apostas foi incluído.
+O `correlationId` é validado na entrada. Um valor externo inválido é substituído por um identificador local; o valor não é aceito cegamente. A correlação segue HTTP -> caso de uso -> Outbox -> publisher -> SQS -> consumer -> Inbox e também o fluxo do worker de referências.
 
-## Casos de uso e orquestração — Etapa 10
+O endpoint `GET /metrics` expõe:
 
-`CreateWalletUseCase` e `ProcessWagerTransactionUseCase` dependem somente das portas da aplicação. `TypeOrmFinancialUnitOfWork` adapta `DataSource.transaction` e cria repositórios com o `EntityManager` transacional, garantindo que wallet, transação e ledger compartilhem a mesma conexão e commit.
+- `wager_transactions_total{status}`
+- `wager_duplicates_total{source}`
+- `wager_retries_total{component,reason}`
+- `wager_dlq_messages_total{reason}`
+- `wager_lock_conflicts_total{component}`
+- `wager_outbox_lag_seconds`
+- `wager_processing_duration_seconds{source,status}`
+- `wager_reconciliation_divergences_total`
 
-Na criação financiada, a wallet nasce com o saldo materializado e a operação `OPENING`/ledger é criada na mesma unidade SQL; o lançamento usa `balanceBefore = 0.00` e preserva a versão inicial da wallet conforme o contrato de resposta. Falha de qualquer insert provoca rollback, impedindo wallet sem registro contábil.
+As unidades são contagens, exceto `wager_outbox_lag_seconds` e `wager_processing_duration_seconds`, que são segundos. Os labels têm cardinalidade controlada e não contêm IDs de negócio. O estado atual não usa OpenTelemetry, Prometheus server ou dashboards.
 
-No processamento, a aplicação verifica replay por `(providerId, idempotencyKey)`, bloqueia a wallet com `FOR UPDATE` e revalida a idempotência após o lock. A operação é aplicada pelo domínio, e wallet, transação e ledger são salvos atomicamente. Rejeições de negócio (`INSUFFICIENT_BALANCE`, `REVERSAL_INSUFFICIENT_BALANCE`, `INVALID_REFERENCE`, `REFERENCE_NOT_FOUND` e `CURRENCY_MISMATCH`) são persistidas como transações terminais sem ledger; falhas de infraestrutura fazem a transação SQL inteira retornar e não deixam estado parcial.
+## Health checks
 
-Uma violação concorrente de unicidade é tratada após o rollback da tentativa: a aplicação relê a chave de idempotência e retorna replay se o payload coincidir, ou conflito se divergir. A constraint PostgreSQL continua sendo a garantia final. Uma transação `PENDING_REFERENCE` é reprocessada pela mesma chave quando a referência passa a existir. `WIN` com referência ausente segue a limitação expressa no domínio: não possui transição `PENDING_REFERENCE` e é rejeitado como referência ausente.
+- `GET /health/live` retorna sucesso se o processo está vivo e não consulta dependências.
+- `GET /health/ready` consulta PostgreSQL e SQS e retorna status de indisponibilidade quando uma dependência falha.
 
-## Decisões aprovadas na etapa de persistência
+Os endpoints são públicos. Readiness não encerra o processo: permite que o ambiente de execução retire a instância do tráfego e tente novamente depois.
 
-- TypeORM com `@nestjs/typeorm` e `pg` foi escolhido dentro das alternativas permitidas.
-- A conexão é configurada por `DATABASE_URL`; `synchronize` e `migrationsRun` permanecem desabilitados.
-- O `DataSource` compartilhado oferece os comandos Bun `migration:create`, `migration:run` e `migration:revert`.
-- O endpoint de liveness permanece independente do banco; `GET /health/ready` consulta PostgreSQL com `SELECT 1`.
+## Persistência e migrações
 
-## Decisões aprovadas na etapa Money
+PostgreSQL é a fonte de verdade do estado financeiro e operacional. O schema contém tabelas para carteiras, ledger, transações, idempotência, Inbox, Outbox e pendências de referência, com índices e constraints para os invariantes relevantes.
 
-- `Money` usa `bigint` privado em centavos, sem `number`, `float` ou `double` para representação ou cálculo.
-- Entradas monetárias são strings decimais não negativas com até duas casas; saída é sempre uma string com duas casas.
-- `Money` permanece independente de NestJS, TypeORM, PostgreSQL e SQS.
+Migrações são executadas explicitamente por `bun run migration:run`. A aplicação não altera o schema automaticamente durante o boot. O Docker Compose fornece PostgreSQL 16 e volumes nomeados para dados locais.
 
-## Decisões aprovadas na etapa Wallet e WalletLedgerEntry
+## Execução local
 
-- `Wallet` possui construtor privado, factories `open`/`rehydrate`, identificadores somente leitura, saldo encapsulado e `version` iniciando em `1`.
-- `debit` e `credit` recebem uma especificação com `id`, `transactionId`, `money` e data opcional, retornam o `WalletLedgerEntry` correspondente e só alteram o saldo após a validação aritmética do lançamento.
-- Moeda incompatível, movimentação negativa e débito sem saldo são rejeitados; a versão só incrementa quando o saldo efetivamente muda. O lançamento é criado mesmo para movimento zero, mas a versão permanece igual.
-- `WalletLedgerEntry` é estruturalmente imutável. `create` valida `balanceBefore ± money === balanceAfter`; `rehydrate` reconstrói sem revalidar a transição, e `isBalanced()` permite consultar o estado persistido.
-- A atomicidade entre wallet e ledger não é simulada no domínio: será garantida pela mesma transação SQL quando a persistência for implementada. A transação interna `OPENING` e seu lançamento também ficam para essa camada de caso de uso/persistência.
+Docker Compose inicia a aplicação, PostgreSQL e LocalStack. O LocalStack cria a fila FIFO de entrada, a DLQ e a fila FIFO de saída. A aplicação runtime é construída a partir de `dist`; migrações devem ser executadas pelo host com Bun e `DATABASE_URL` configurados.
 
-## Decisões aprovadas na etapa WagerTransaction
+Parâmetros de polling, batch, leases, retry, TTL e workers são configuráveis por ambiente e possuem defaults no código. A configuração completa de desenvolvimento está em [.env.example](.env.example).
 
-- `WagerTransaction` possui factories `create`/`rehydrate`, identificadores e dados de negócio imutáveis, `Money`, referência externa opcional e estado encapsulado.
-- `create` inicia em `PENDING`. As transições permitidas são `PENDING → PENDING_REFERENCE`, `PENDING/PENDING_REFERENCE → PROCESSED`, `REJECTED` ou `FAILED`; os três estados finais são terminais.
-- `REFUND` e `ROLLBACK` exigem referência externa. A entidade valida referências carregadas por provider, player, wallet, moeda e round; `REFUND` só aceita `BET`, `ROLLBACK` aceita `BET`, `WIN` ou `REFUND`, e reversões exigem estado `PROCESSED` e valor igual.
-- A ausência ou duplicidade de referência não é resolvida por memória: `PENDING_REFERENCE`, consulta persistente e constraints futuras serão responsabilidade da aplicação/persistência. `OPENING` é mantido apenas como tipo interno.
-- `LOSS` não afeta saldo e não possui direção de ledger. `BET` é débito, `WIN`/`REFUND` são créditos e `ROLLBACK` inverte a direção da referência.
+## Evolução documentada
 
-## Decisões pendentes
+As primeiras decisões registradas descreviam uma etapa de fundação em que HTTP e SQS ainda eram propostas. Essas decisões continuam preservadas para explicar o raciocínio histórico; a implementação posterior tornou efetivos os controllers, a mensageria, a Inbox/Outbox, a recuperação e a observabilidade. Quando um registro histórico disser que um componente não existia, ele deve ser lido como o estado daquela etapa, não como a descrição atual.
 
-- Retry de deadlock/timeout; o caso de uso atual deixa esses erros para a camada de entrada decidir, sem repetir automaticamente uma operação financeira.
-- Idempotência, JSON canônico e payload hash.
-- Processamento HTTP síncrono versus assíncrono e status HTTP.
-- Tentativas, backoff, visibilidade, DLQ e shutdown da SQS.
-- TTL/reprocessamento de referências ausentes.
-- Claim/lock e retry de publishers concorrentes da outbox.
-- Failure codes, autenticação/IdP, OpenAPI e instrumentação.
-
-## Limitações conhecidas
-
-O schema inclui a tabela técnica histórica `migration_probe` e as três tabelas financeiras da Etapa 9; inbox, outbox, consumers e regras de processamento ainda não existem.
-
-O comando de migração foi validado no container da aplicação, usando a rede interna do Compose. Neste ambiente, a porta IPv4 `5432` do host também é ocupada por um PostgreSQL nativo, portanto o acesso do CLI executado no host pode atingir outra instância; isso não afeta a conexão da aplicação com o serviço `postgres` do Compose.
-## API HTTP — Etapa 11
-
-Os endpoints síncronos reutilizam `CreateWalletUseCase` e `ProcessWagerTransactionUseCase`. O hash de idempotência é SHA-256 de JSON canônico recursivamente ordenado dos campos de negócio; `Idempotency-Key` e metadados HTTP ficam fora do hash. O ledger usa cursor opaco base64url contendo `(createdAt,id)` e consulta lexicográfica indexada, sem offset.
-
-Mapeamento HTTP: `400` para payload, header, cursor ou limite inválido; `404` para recurso inexistente; `409` para carteira/transação duplicada ou conflito de idempotência; `422` para rejeição de regra de negócio; `202` para `PENDING_REFERENCE`; `201` para submissão nova processada e `200` para replay; `503` para dependência indisponível; `500` somente para erro inesperado. As respostas não incluem stack trace ou detalhes de banco.
-
-`POST /wallets/:walletId/reconciliation` reconstrói o saldo somando o ledger, registra divergência com log estruturado e nunca corrige dados. Readiness consulta PostgreSQL; SQS ainda não tem cliente nesta etapa e essa limitação é documentada, sem declarar uma verificação falsa.
-## Mensageria distribuída — Etapa 12
-
-As alterações financeiras, o ledger, o Inbox (quando a entrada é SQS) e os eventos de integração são gravados pela mesma `FinancialUnitOfWork`. Os eventos são envelopes versionados (`IntegrationEvent`) e o JSON da Outbox contém somente valores serializáveis; `Money` vira `MoneyProps` com decimal em string. `WagerTransactionProcessed` é emitido também para `LOSS`; `WalletBalanceChanged` só é emitido quando `balanceBefore` difere de `balanceAfter`.
-
-`outbox_messages` usa claim distribuído por lote com `FOR UPDATE SKIP LOCKED`. O claim guarda token e lease; registros com lease expirado podem ser assumidos por outra instância. A publicação é at-least-once: o processo publica fora da transação SQL e marca `published_at` depois, aceitando duplicata em crash entre as duas operações. Falhas usam backoff exponencial sem descartar eventos confirmados.
-
-`inbox_messages` tem unicidade `(consumer_name, message_id)`. O consumer insere/obtém a linha com `ON CONFLICT DO NOTHING` e bloqueio `FOR UPDATE`, executa o mesmo `ProcessWagerTransactionUseCase` usado pelo HTTP dentro da mesma transação e marca a Inbox antes do commit. O `DeleteMessage`/ACK ocorre somente depois do commit; falhas de infraestrutura deixam a mensagem invisível pelo timeout e permitem redelivery.
-
-O Compose declara as duas filas de entrada/DLQ exigidas pelo README e a FIFO de saída adotada nesta etapa: `wager-transactions.fifo`, `wager-transactions-dlq.fifo` e `wager-integration-events.fifo`. A FIFO de entrada usa `MessageGroupId` por wallet; o publisher usa o aggregate id na FIFO de saída; `MessageDeduplicationId` recebe o id persistente do evento/mensagem. A fila de entrada tem visibility timeout de 30s e redrive após 5 recebimentos. O README não define uma fila de saída separada, portanto essa extensão está formalizada na ADR-014; não há consumer financeiro da FIFO de saída.
-
-Erros de validação/negócio são terminais e recebem ACK; mensagens malformadas são registradas como `FAILED`, enviadas à DLQ e removidas da fila principal. Erros inesperados de PostgreSQL/SQS não recebem ACK e usam retry/visibility, ficando sujeitos à política de redrive. SIGTERM interrompe novos receives, aguarda o processamento corrente e deixa mensagens não confirmadas para redelivery.
-
-Readiness agora verifica PostgreSQL e `GetQueueAttributes`/existência das duas filas. Logs estruturados cobrem startup, retry, falha de publish e processamento com ids de correlação, mensagem, evento, transação, wallet, provider e tentativa, sem payload financeiro completo. Esses pontos são também pontos de instrumentação para métricas de lag, retries, duplicatas, DLQ e latência.
-`PENDING_REFERENCE` é reconsultada por `PendingReferenceWorker` em intervalo configurável. O worker reutiliza o caso de uso e o lock da wallet; após TTL configurável (15 minutos por padrão), a transação é rejeitada com `REFERENCE_NOT_FOUND` e o evento terminal é enviado à Outbox. O estado persistido, e não o timer local, decide o resultado entre instâncias.
-
-## Correções da auditoria complementar da Etapa 12
-
-O README define `wager-transactions.fifo` como canal de entrada e `wager-transactions-dlq.fifo` como sua DLQ, mas não define um destino para eventos de integração. A decisão adotada é criar `wager-integration-events.fifo` como FIFO de saída. O publisher da Outbox envia somente para essa fila; nenhum consumer financeiro a lê, eliminando o ciclo e o descarte silencioso de eventos. Um envelope de integração recebido por engano na fila de entrada é considerado mensagem inválida, registrado na Inbox como `FAILED`, encaminhado à DLQ e removido apenas depois do envio bem-sucedido à DLQ.
-
-O hash de idempotência é calculado por `hashWagerTransactionPayload` sobre os campos financeiros normalizados. `messageId`, `occurredAt` e demais metadados de transporte ficam fora do hash; a unicidade persistente da Inbox continua sendo `(consumer_name, message_id)`. Assim, envelopes com IDs de transporte diferentes podem ser replay idempotente, enquanto uma mesma chave com conteúdo financeiro divergente continua sendo conflito.
-
-O shutdown habilita `SIGINT`/`SIGTERM` em `main.ts`, aborta o receive em andamento, impede novos receives e não confirma mensagens enquanto o processo está encerrando. O processamento corrente tem limite controlado; se ultrapassá-lo, a ausência de ACK permite redelivery.
-
-Leases da Outbox usam `claim_token` persistente e heartbeat PostgreSQL periódico durante a publicação. `markPublished` e `scheduleRetry` validam o token; leases abandonados continuam recuperáveis pelo critério de expiração. `PENDING_REFERENCE` ganhou claim, tentativas, próximo horário, lease e último erro persistentes em migration reversível. Workers concorrentes usam `FOR UPDATE SKIP LOCKED`, backoff exponencial e recuperam claims expirados sem depender de memória local.
+As limitações atuais são: ausência de autenticação/autorização, métricas somente em memória, ausência de dashboards e observação direta do redrive automático da DLQ. Nenhuma dessas limitações altera a atomicidade financeira ou a idempotência persistida.

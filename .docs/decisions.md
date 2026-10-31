@@ -4,6 +4,17 @@
 
 Status possíveis: **proposta**, **aprovada** e **substituída**. O [README](../README.md) é a fonte dos requisitos; [challenge.md](challenge.md) é sua cópia fiel.
 
+## Estado atual e evolução das decisões
+
+As ADRs abaixo preservam o histórico das etapas em que foram aprovadas. Algumas consequências descrevem limitações que existiam naquele momento e foram superadas por decisões posteriores. Em particular:
+
+- A ADR-003 continua válida para TypeORM, migrações explícitas e separação entre liveness e readiness; sua referência à readiness somente PostgreSQL era uma limitação da etapa inicial.
+- A ADR-011 continua válida para os contratos HTTP e a reconciliação; a limitação de SQS foi superada pelas ADRs-012, 013, 014 e 015.
+- A ADR-012 foi expandida pela ADR-014 para separar a fila de entrada da fila de eventos de integração.
+- A ADR-016 registra a observabilidade atualmente implementada: logs estruturados, métricas em memória, correlação validada e health checks sem infraestrutura adicional.
+
+Nenhuma decisão histórica é removida. Quando uma ADR antiga disser que um componente ainda não existia, isso representa o estado daquela etapa, não o estado atual do código.
+
 ## ADR-001 — README oficial como fonte de verdade
 
 - **ID:** ADR-001
@@ -165,3 +176,11 @@ Cada item deverá registrar contexto/problema, alternativas, decisão, justifica
 - **Decisão:** HTTP e SQS usam a mesma canonização dos campos financeiros; `messageId`, timestamp de transporte e outros metadados não participam do hash. A Inbox continua identificada por `(consumer_name,message_id)`. Outbox e `PENDING_REFERENCE` usam tokens e leases persistidos no PostgreSQL, com renovação periódica e backoff persistido.
 - **Justificativa:** preserva replay idempotente entre redeliveries/envelopes distintos sem relaxar conflito de payload, e permite exclusividade/recuperação entre múltiplas instâncias.
 - **Consequências:** publicação continua at-least-once; falha depois do envio e antes do commit de `published_at` pode produzir duplicata, que consumidores devem tratar de forma idempotente.
+## ADR-016 - Observabilidade operacional sem infraestrutura adicional
+
+- **Status:** aprovada - 2026-10-31.
+- **Contexto:** a secao 12 exige logs estruturados, transacoes por status, duplicatas, retries, DLQ, conflitos de lock, outbox lag, latencia e health separado, mas OpenTelemetry, Prometheus e dashboards sao opcionais.
+- **Decisao:** usar `StructuredLogger` com allowlist de campos e `MetricsService` em memoria, expondo `GET /metrics` no formato Prometheus. Nenhum identificador financeiro ou payload sera label; valores monetarios nao serao logados nem medidos.
+- **Semantica:** status e contado somente para resultado financeiro novo; replay HTTP e redelivery Inbox processada contam como duplicata, sem repetir efeito. Lag e latencia usam segundos; retry, DLQ, lock e divergencia usam contadores.
+- **Correlacao:** IDs externos sao validados por formato; HTTP propaga o ID para o caso de uso e Outbox, e SQS o propaga no envelope, usando `messageId` como fallback. `causationId` identifica a mensagem de origem.
+- **Consequencias:** a aplicacao nao depende de exporter ou servidor adicional e continua simples de operar. O endpoint nao oferece retencao nem alertas; redrive automatico do SQS so pode ser observado por ferramentas externas.

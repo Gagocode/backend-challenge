@@ -9,9 +9,12 @@ import type { ProcessWagerTransactionResult } from '../../application/use-cases/
 import { hashPayload, hashWagerTransactionPayload } from '../../application/messaging/payload-hash';
 import type { FinancialUnitOfWork } from '../../application/ports/financial-repositories';
 import { SqsClientService } from './sqs-client';
+import { MetricsService } from '../../observability/metrics.service';
+import { StructuredLogger, safeCorrelationId } from '../../observability/structured-logger';
 
 interface WagerTransactionMessage {
   messageId: string;
+  correlationId?: string;
   type: 'WagerTransactionRequested';
   occurredAt: string;
   data: {
@@ -24,6 +27,7 @@ interface WagerTransactionMessage {
     gameId: string;
     kind: Exclude<WagerTransactionKind, WagerTransactionKind.Opening>;
     money: { amount: string; currency: string };
+    referenceExternalTransactionId?: string;
   };
 }
 
@@ -58,6 +62,8 @@ export class WagerTransactionConsumer implements OnModuleInit, OnModuleDestroy {
     private readonly sqs: SqsClientService,
     private readonly unitOfWork: FinancialUnitOfWork,
     private readonly process: ProcessWagerTransactionUseCase,
+    private readonly logger = new StructuredLogger(),
+    private readonly metrics = new MetricsService(),
   ) {}
 
   public onModuleInit(): void {
@@ -65,7 +71,7 @@ export class WagerTransactionConsumer implements OnModuleInit, OnModuleDestroy {
       this.shuttingDown = false;
       this.running = true;
       this.polling = this.poll();
-      console.info(JSON.stringify({ event: 'sqs_consumer_started', consumerName: this.sqs.consumerName }));
+      this.logger.info('sqs_consumer_started', { consumerName: this.sqs.consumerName, component: 'consumer' });
     }
   }
 
@@ -89,12 +95,17 @@ export class WagerTransactionConsumer implements OnModuleInit, OnModuleDestroy {
 
   public async processMessage(message: Message): Promise<void> {
     const body = message.Body ?? '';
+    const messageId = message.MessageId ?? 'unknown';
+    const receiveCount = Number(message.Attributes?.ApproximateReceiveCount ?? 1);
+    if (receiveCount > 1) this.logger.warn('sqs_message_redelivered', { messageId, consumerName: this.sqs.consumerName, attempt: receiveCount, component: 'consumer' });
     let parsed: WagerTransactionMessage;
     try {
       parsed = parseMessage(body);
     } catch (error: unknown) {
-      await this.recordTerminalMessage(message.MessageId ?? 'unknown', body, error instanceof Error ? error.message : 'Invalid message');
-      await this.sqs.sendToDlq(body, message.MessageId ?? `invalid-${Date.now()}`);
+      await this.recordTerminalMessage(messageId, body, error instanceof Error ? error.message : 'Invalid message');
+      await this.sqs.sendToDlq(body, messageId);
+      this.metrics.dlq('invalid_message');
+      this.logger.warn('sqs_message_sent_to_dlq', { messageId, consumerName: this.sqs.consumerName, reason: 'invalid_message', component: 'consumer' });
       if (!this.shuttingDown && message.ReceiptHandle) await this.sqs.delete(message.ReceiptHandle);
       return;
     }
@@ -102,10 +113,12 @@ export class WagerTransactionConsumer implements OnModuleInit, OnModuleDestroy {
     const payloadHash = hashWagerTransactionPayload(parsed.data as unknown as Record<string, unknown>);
     let businessTerminal = false;
     let result: ProcessWagerTransactionResult | undefined;
+    const startedAt = Date.now();
+    const correlationId = safeCorrelationId(parsed.correlationId, safeCorrelationId(parsed.messageId));
     try {
       await this.unitOfWork.execute(async (context) => {
         const receipt = await context.inbox.receive(parsed.messageId, this.sqs.consumerName, payloadHash, new Date(parsed.occurredAt));
-        if (receipt.message.isProcessed()) return;
+        if (receipt.message.isProcessed()) { this.metrics.duplicate('sqs'); this.logger.info('sqs_message_duplicate', { correlationId, messageId: parsed.messageId, consumerName: this.sqs.consumerName, attempt: receiveCount, component: 'consumer' }); return; }
         if (receipt.message.lastError) {
           receipt.message.markFailed(receipt.message.lastError);
           await context.inbox.save(receipt.message);
@@ -113,7 +126,7 @@ export class WagerTransactionConsumer implements OnModuleInit, OnModuleDestroy {
           return;
         }
         try {
-          result = await this.process.executeWithinTransaction({ ...parsed.data, kind: parsed.data.kind, money: Money.from(parsed.data.money), payloadHash, correlationId: parsed.messageId, causationId: parsed.messageId }, context);
+          result = await this.process.executeWithinTransaction({ ...parsed.data, kind: parsed.data.kind, money: Money.from(parsed.data.money), payloadHash, correlationId, causationId: parsed.messageId, source: 'sqs' }, context);
           receipt.message.markProcessed(new Date());
           await context.inbox.save(receipt.message);
         } catch (error: unknown) {
@@ -124,14 +137,14 @@ export class WagerTransactionConsumer implements OnModuleInit, OnModuleDestroy {
         }
       });
       if (!this.shuttingDown && message.ReceiptHandle) await this.sqs.delete(message.ReceiptHandle);
-      if (result) console.info(JSON.stringify({ event: 'sqs_message_processed', consumerName: this.sqs.consumerName, messageId: parsed.messageId, correlationId: parsed.messageId, transactionId: result.transaction.id, walletId: result.wallet.id, providerId: result.transaction.providerId, attempt: Number(message.Attributes?.ApproximateReceiveCount ?? 1) }));
+      if (result) { this.process.observe(result, { ...parsed.data, kind: parsed.data.kind, money: Money.from(parsed.data.money), payloadHash, correlationId, source: 'sqs', idempotencyKey: parsed.data.idempotencyKey }, 'sqs', startedAt); this.logger.info('sqs_message_processed', { consumerName: this.sqs.consumerName, messageId: parsed.messageId, correlationId, transactionId: result.transaction.id, walletId: result.wallet.id, providerId: result.transaction.providerId, attempt: receiveCount, component: 'consumer' }); }
     } catch (error: unknown) {
-      const receiveCount = Number(message.Attributes?.ApproximateReceiveCount ?? 1);
       const seconds = Math.min(this.sqs.visibilityTimeoutSeconds, Math.max(1, Math.min(60, 2 ** Math.min(receiveCount, 6))));
-      console.error(JSON.stringify({ event: 'sqs_consumer_retry', consumerName: this.sqs.consumerName, messageId: parsed.messageId, attempt: receiveCount, error: error instanceof Error ? error.message : 'unknown' }));
+      this.metrics.retry('consumer', 'infrastructure');
+      this.logger.error('sqs_consumer_retry', { consumerName: this.sqs.consumerName, messageId: parsed.messageId, correlationId, attempt: receiveCount, delayMs: seconds * 1000, component: 'consumer', errorCode: error instanceof Error ? error.constructor.name : 'UnknownError' });
       if (message.ReceiptHandle) await this.sqs.retry(message.ReceiptHandle, seconds);
     }
-    if (businessTerminal) console.info(JSON.stringify({ event: 'sqs_consumer_terminal', consumerName: this.sqs.consumerName, messageId: parsed.messageId }));
+    if (businessTerminal) this.logger.warn('sqs_consumer_terminal', { consumerName: this.sqs.consumerName, messageId: parsed.messageId, correlationId, component: 'consumer', reason: 'business' });
   }
 
   private async recordTerminalMessage(messageId: string, body: string, error: string): Promise<void> {
@@ -155,7 +168,8 @@ export class WagerTransactionConsumer implements OnModuleInit, OnModuleDestroy {
         }
       } catch (error: unknown) {
         if (!this.running && this.abortController.signal.aborted) break;
-        console.error(JSON.stringify({ event: 'sqs_consumer_poll_failed', consumerName: this.sqs.consumerName, error: error instanceof Error ? error.message : 'unknown' }));
+        this.metrics.retry('consumer', 'infrastructure');
+        this.logger.error('sqs_consumer_poll_failed', { consumerName: this.sqs.consumerName, component: 'consumer', errorCode: error instanceof Error ? error.constructor.name : 'UnknownError' });
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     }

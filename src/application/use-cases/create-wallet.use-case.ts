@@ -6,6 +6,7 @@ import { WalletLedgerEntry } from '../../domain/wallet/wallet-ledger-entry';
 import type { FinancialUnitOfWork } from '../ports/financial-repositories';
 import { FinancialConflictError } from '../financial-errors';
 import { enqueueFinancialEvents } from '../messaging/enqueue-financial-events';
+import { StructuredLogger } from '../../observability/structured-logger';
 
 export interface CreateWalletCommand { id: string; playerId: string; initialBalance: Money; now?: Date; }
 
@@ -16,7 +17,7 @@ const isUniqueViolation = (error: unknown): boolean => {
 };
 
 export class CreateWalletUseCase {
-  public constructor(private readonly unitOfWork: FinancialUnitOfWork) {}
+  public constructor(private readonly unitOfWork: FinancialUnitOfWork, private readonly logger?: StructuredLogger) {}
 
   public async execute(command: CreateWalletCommand): Promise<Wallet> {
     try {
@@ -46,7 +47,7 @@ export class CreateWalletUseCase {
         return persistedWallet;
       });
     } catch (error: unknown) {
-      if (error instanceof FinancialConflictError) throw error;
+      if (error instanceof FinancialConflictError) { this.logger?.warn('wallet_creation_rejected', { errorCode: 'WALLET_CONFLICT', component: 'financial_processing' }); throw error; }
       if (isUniqueViolation(error)) throw new FinancialConflictError('A wallet already exists for this player and currency');
       throw error;
     }
