@@ -1,6 +1,6 @@
 # Arquitetura do Distributed Wagering Processor
 
-Este documento descreve o estado implementado na branch de observabilidade. O desafio original e o histórico de decisões permanecem em [.docs/challenge.md](.docs/challenge.md) e [.docs/decisions.md](.docs/decisions.md).
+Este documento descreve o estado implementado nesta entrega. O desafio original e o histórico de decisões permanecem em [.docs/challenge.md](.docs/challenge.md) e [.docs/decisions.md](.docs/decisions.md).
 
 ## Visão geral
 
@@ -84,6 +84,8 @@ financial transaction -> outbox row -> claim/lease -> SQS output FIFO
 
 O publisher usa leases para permitir recuperação após interrupção de processo, limita o lote e aplica backoff. Mensagens inválidas são enviadas à DLQ de entrada. Falhas transitórias permanecem disponíveis para redelivery; o redrive automático após o limite configurado é responsabilidade do SQS.
 
+A `wager-integration-events.fifo` não é consumida pelo consumer financeiro interno. Ela contém eventos da Outbox para consumidores externos ou uma futura camada de fan-out; portanto, a topologia implementada não é uma cadeia Outbox → consumer financeiro. Os testes usam LocalStack 3.8.1, não AWS em produção.
+
 Quando uma operação depende de outra transação ainda ausente, ela fica em `PENDING_REFERENCE`. O worker retoma a pendência até o TTL configurado; expirado esse prazo, a operação não é aplicada silenciosamente.
 
 ## Observabilidade e correlação
@@ -112,11 +114,15 @@ As unidades são contagens, exceto `wager_outbox_lag_seconds` e `wager_processin
 
 Os endpoints são públicos. Readiness não encerra o processo: permite que o ambiente de execução retire a instância do tráfego e tente novamente depois.
 
+## Autenticação
+
+Autenticação e autorização não foram implementadas, conforme a opção aceita pela seção 2 do desafio e a limitação de escopo desta entrega. Os endpoints HTTP são públicos e a fila é tratada como canal interno confiável; ainda assim, `providerId`, identidade da wallet/player, moeda e demais campos da mensagem são validados. Uma integração futura deve introduzir um guard/port de identidade do provedor antes dos controllers, sem mover regras financeiras para essa camada.
+
 ## Persistência e migrações
 
 PostgreSQL é a fonte de verdade do estado financeiro e operacional. O schema contém tabelas para carteiras, ledger, transações, idempotência, Inbox, Outbox e pendências de referência, com índices e constraints para os invariantes relevantes.
 
-Migrações são executadas explicitamente por `bun run migration:run`. A aplicação não altera o schema automaticamente durante o boot. O Docker Compose fornece PostgreSQL 16 e volumes nomeados para dados locais.
+Migrações são executadas explicitamente por `bun run migration:run`. A aplicação não altera o schema automaticamente durante o boot. A migration de associações financeiras cria FKs compostas como `NOT VALID` e tenta validá-las na mesma execução; portanto, um schema legado com violações precisa de saneamento e decisão operacional antes de aplicar essa migration. O Docker Compose fornece PostgreSQL 16 e volumes nomeados para dados locais.
 
 ## Execução local
 

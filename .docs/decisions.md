@@ -75,6 +75,10 @@ Nenhuma decisão histórica é removida. Quando uma ADR antiga disser que um com
 
 Cada item deverá registrar contexto/problema, alternativas, decisão, justificativa, consequências/trade-offs e data antes de receber status **aprovada**.
 
+### Situação atual dos itens pendentes históricos
+
+Os itens `PEND-001` a `PEND-007` foram resolvidos pelas ADRs aprovadas de domínio, concorrência, unidade de trabalho, Outbox/Inbox e mensageria (`ADR-005`, `ADR-007`, `ADR-009`, `ADR-010`, `ADR-012`, `ADR-013`, `ADR-014` e `ADR-015`). `PEND-008` permanece deliberadamente sem autenticação, decisão aceita e documentada nesta entrega. `PEND-009` permanece não implementado; OpenAPI não faz parte da implementação atual.
+
 ## ADR-008 — Persistência financeira PostgreSQL
 
 - **ID:** ADR-008
@@ -180,7 +184,7 @@ Cada item deverá registrar contexto/problema, alternativas, decisão, justifica
 
 - **Status:** aprovada - 2026-10-31.
 - **Contexto:** a auditoria identificou que testes de integração podiam ser ignorados, publishers externos podiam disputar a Outbox e o schema não impedia todas as associações cruzadas entre wallet, player, transação e ledger.
-- **Decisão:** separar `test:unit`, `test:integration`, `test:sqs` e `test:migrations`; o runner de integração cria schema PostgreSQL e filas FIFO exclusivas por execução, aplica migrations e remove somente os recursos próprios. A migration `StrengthenFinancialAssociations1710000004000` adiciona FKs compostas e unicidades para novas associações financeiras. FKs são `NOT VALID` na instalação sobre bancos legados para preservar dados existentes; novas inserções e atualizações continuam protegidas.
+- **Decisão:** separar `test:unit`, `test:integration`, `test:sqs` e `test:migrations`; o runner de integração cria schema PostgreSQL e filas FIFO exclusivas por execução, aplica migrations e remove somente os recursos próprios. A migration `StrengthenFinancialAssociations1710000004000` adiciona FKs compostas e unicidades para novas associações financeiras, criando as FKs como `NOT VALID` e tentando validá-las na mesma execução. Em banco legado com violações, a aplicação da migration deve ser interrompida para saneamento explícito; novas inserções e atualizações só ficam protegidas depois que a migration for aplicada.
 - **Observabilidade:** o outbox lag é zerado quando não há claims pendentes; a métrica de DLQ continua limitada a envios explícitos, sem inventar observação do redrive automático.
 - **Trade-offs:** bancos legados podem conter associações inconsistentes históricas e exigem saneamento antes de `VALIDATE CONSTRAINT`; a suíte completa requer infraestrutura real, enquanto a suíte unitária permanece independente.
 

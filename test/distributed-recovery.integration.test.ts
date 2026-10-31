@@ -175,9 +175,9 @@ describe('real PostgreSQL concurrency with independent application processes', (
   }, 30000);
 
   test('A: 50 identical requests produce one financial operation and 49 idempotent replays', async () => {
-    const wallet = await createWallet(ports[0]!, '0.00');
+    const wallet = await createWallet(ports[0]!, '100.00');
     const key = `same-key-${id()}`;
-    const common = { providerId: `provider-${id()}`, externalTransactionId: `external-${id()}`, roundId: `round-${id()}`, gameId: 'same-operation', kind: 'WIN', money: { amount: '2.00', currency: 'BRL' } };
+    const common = { providerId: `provider-${id()}`, externalTransactionId: `external-${id()}`, roundId: `round-${id()}`, gameId: 'same-operation', kind: 'BET', money: { amount: '2.00', currency: 'BRL' } };
     const results = await Promise.all(Array.from({ length: 50 }, (_, index) => submit(ports[index % ports.length]!, wallet, common, key)));
     expect(results.filter((result) => result.status === 201)).toHaveLength(1);
     expect(results.filter((result) => result.status === 200 && result.body.idempotentReplay === true)).toHaveLength(49);
@@ -187,7 +187,7 @@ describe('real PostgreSQL concurrency with independent application processes', (
     expect(transactions).toHaveLength(1);
     expect(transactions[0]?.status).toBe('PROCESSED');
     expect(Number(ledger[0]?.count)).toBe(1);
-    expect(walletRow[0]?.balance).toBe('2.00');
+    expect(walletRow[0]?.balance).toBe('98.00');
   }, 90000);
 
   test('B: concurrent debits on one wallet serialize without a negative balance', async () => {
@@ -259,6 +259,61 @@ describe('real SQS distribution, crash recovery, leases, retry and DLQ', () => {
     }
   }, 120000);
 
+  test('SQS processes a REFUND delivered before its referenced BET through persistent pending-reference recovery', async () => {
+    const port = 37200 + (process.pid % 500);
+    const app = await startApp(port, { workers: true, consumerName: `out-of-order-consumer-${id()}`, batchSize: '1' });
+    try {
+      const wallet = await createWallet(port, '5.00');
+      const providerId = `out-of-order-provider-${id()}`;
+      const roundId = `out-of-order-round-${id()}`;
+      const betExternalId = `out-of-order-bet-${id()}`;
+      const refundExternalId = `out-of-order-refund-${id()}`;
+      const betMessageId = `out-of-order-bet-message-${id()}`;
+      const refundMessageId = `out-of-order-refund-message-${id()}`;
+      const refund = sqsMessage(refundMessageId, wallet, {
+        providerId,
+        externalTransactionId: refundExternalId,
+        idempotencyKey: `out-of-order-refund-key-${id()}`,
+        roundId,
+        kind: 'REFUND',
+        money: { amount: '5.00', currency: 'BRL' },
+        referenceExternalTransactionId: betExternalId,
+      });
+      const bet = sqsMessage(betMessageId, wallet, {
+        providerId,
+        externalTransactionId: betExternalId,
+        idempotencyKey: `out-of-order-bet-key-${id()}`,
+        roundId,
+        kind: 'BET',
+        money: { amount: '5.00', currency: 'BRL' },
+      });
+      await sendMain(refund, wallet.id);
+      await waitFor(async () => Number((await database.query('SELECT count(*)::int AS count FROM wager_transactions WHERE provider_id = $1 AND external_transaction_id = $2 AND status = \'PENDING_REFERENCE\'', [providerId, refundExternalId]))[0]?.count) === 1, 15000);
+      await sendMain(bet, wallet.id);
+      try {
+        await waitFor(async () => Number((await database.query('SELECT count(*)::int AS count FROM wager_transactions WHERE provider_id = $1 AND status = \'PROCESSED\'', [providerId]))[0]?.count) === 2, 30000);
+      } catch (error: unknown) {
+        const state = await database.query('SELECT external_transaction_id, status, pending_attempts, pending_next_attempt_at, pending_claimed_at, pending_last_error FROM wager_transactions WHERE provider_id = $1 ORDER BY created_at', [providerId]);
+        throw new Error(`${error instanceof Error ? error.message : String(error)}; out-of-order state=${JSON.stringify(state)}`);
+      }
+      const financial = await database.query(`
+        SELECT w.balance_amount::text AS balance,
+               (SELECT count(*)::int FROM wager_transactions WHERE provider_id = $1) AS transactions,
+               (SELECT count(*)::int FROM wallet_ledger_entries l JOIN wager_transactions t ON t.id = l.transaction_id WHERE t.provider_id = $1) AS ledger_entries,
+               (SELECT COALESCE(SUM(CASE WHEN l.direction = 'CREDIT' THEN l.money_amount ELSE -l.money_amount END), 0)::text FROM wallet_ledger_entries l JOIN wager_transactions t ON t.id = l.transaction_id WHERE t.provider_id = $1) AS ledger_balance
+        FROM wallets w WHERE w.id = $2
+      `, [providerId, wallet.id]) as Array<{ balance: string; transactions: number; ledger_entries: number; ledger_balance: string }>;
+      const inbox = await database.query('SELECT message_id, status FROM inbox_messages WHERE message_id IN ($1, $2) ORDER BY message_id', [refundMessageId, betMessageId]) as Array<{ message_id: string; status: string }>;
+      expect(financial[0]?.balance).toBe('5.00');
+      expect(Number(financial[0]?.transactions)).toBe(2);
+      expect(Number(financial[0]?.ledger_entries)).toBe(2);
+      expect(financial[0]?.ledger_balance).toBe('0.00');
+      expect(inbox).toEqual([{ message_id: betMessageId, status: 'PROCESSED' }, { message_id: refundMessageId, status: 'PROCESSED' }].sort((left, right) => left.message_id.localeCompare(right.message_id)));
+    } finally {
+      await stop(app);
+    }
+  }, 90000);
+
   test('crash after commit before ACK is recovered by redelivery and Inbox idempotency', async () => {
     const http = await startApp(37500 + (process.pid % 500), { workers: false });
     const wallet = await createWallet(37500 + (process.pid % 500), '10.00');
@@ -271,15 +326,34 @@ describe('real SQS distribution, crash recovery, leases, retry and DLQ', () => {
     expect(exitCode).toBe(42);
     const rowBeforeRestart = await database.query('SELECT status FROM wager_transactions WHERE wallet_id = $1 AND external_transaction_id = $2', [wallet.id, (message.data as Record<string, unknown>).externalTransactionId]) as Array<{ status: string }>;
     expect(rowBeforeRestart[0]?.status).toBe('PROCESSED');
+    const inboxBeforeRestart = await database.query('SELECT status, attempts FROM inbox_messages WHERE message_id = $1', [messageId]) as Array<{ status: string; attempts: number }>;
+    expect(inboxBeforeRestart[0]?.status).toBe('PROCESSED');
+    expect(Number(inboxBeforeRestart[0]?.attempts)).toBe(1);
+    await waitFor(async () => {
+      const attributes = await sqs.send(new GetQueueAttributesCommand({ QueueUrl: mainQueueUrl, AttributeNames: ['ApproximateNumberOfMessages'] }));
+      return Number(attributes.Attributes?.ApproximateNumberOfMessages ?? 0) >= 1;
+    }, 15000);
+    let redeliveryCount = 0;
+    const redelivery = await sqs.send(new ReceiveMessageCommand({ QueueUrl: mainQueueUrl, MaxNumberOfMessages: 1, WaitTimeSeconds: 0, VisibilityTimeout: 0, MessageSystemAttributeNames: ['ApproximateReceiveCount'] }));
+    const redeliveredMessage = redelivery.Messages?.[0];
+    expect(redeliveredMessage?.Body).toBeDefined();
+    const redeliveredBody = JSON.parse(redeliveredMessage?.Body ?? '{}') as { messageId?: string };
+    expect(redeliveredBody.messageId).toBe(messageId);
+    redeliveryCount = Number(redeliveredMessage?.Attributes?.ApproximateReceiveCount ?? 0);
+    expect(redeliveryCount).toBeGreaterThanOrEqual(2);
     const restarted = await startApp(38500 + (process.pid % 500), { workers: true, consumerName, visibility: '1', batchSize: '1' });
     try {
-      await waitFor(async () => Number((await database.query('SELECT count(*)::int AS count FROM inbox_messages WHERE message_id = $1', [messageId]))[0]?.count) >= 1, 15000);
+      await waitFor(async () => {
+        const attributes = await sqs.send(new GetQueueAttributesCommand({ QueueUrl: mainQueueUrl, AttributeNames: ['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible'] }));
+        return Number(attributes.Attributes?.ApproximateNumberOfMessages ?? 0) === 0 && Number(attributes.Attributes?.ApproximateNumberOfMessagesNotVisible ?? 0) === 0;
+      }, 15000);
       const transactionRows = await database.query('SELECT count(*)::int AS count FROM wager_transactions WHERE wallet_id = $1 AND external_transaction_id = $2', [wallet.id, (message.data as Record<string, unknown>).externalTransactionId]) as Array<{ count: number }>;
       const ledgerRows = await database.query('SELECT count(*)::int AS count FROM wallet_ledger_entries WHERE wallet_id = $1 AND transaction_id IN (SELECT id FROM wager_transactions WHERE wallet_id = $1 AND external_transaction_id = $2)', [wallet.id, (message.data as Record<string, unknown>).externalTransactionId]) as Array<{ count: number }>;
       const inboxRows = await database.query('SELECT status, attempts FROM inbox_messages WHERE message_id = $1', [messageId]) as Array<{ status: string; attempts: number }>;
       expect(Number(transactionRows[0]?.count)).toBe(1);
       expect(Number(ledgerRows[0]?.count)).toBe(1);
-      expect(inboxRows.some((row) => row.status === 'PROCESSED')).toBe(true);
+      expect(inboxRows).toHaveLength(1);
+      expect(inboxRows[0]?.status).toBe('PROCESSED');
     } finally {
       await stop(restarted);
       await stop(http);
@@ -296,6 +370,10 @@ describe('real SQS distribution, crash recovery, leases, retry and DLQ', () => {
     const crashing = await startApp(39500 + (process.pid % 500), { workers: true, outboxFault: 'crash-after-send-before-mark-published', visibility: '1', batchSize: '1', outboxLeaseMs: '1000', waitForHealth: false });
     const exitCode = await crashing.exited;
     expect(exitCode).toBe(43);
+    await waitFor(async () => {
+      const attributes = await sqs.send(new GetQueueAttributesCommand({ QueueUrl: outputQueueUrl, AttributeNames: ['ApproximateNumberOfMessages'] }));
+      return Number(attributes.Attributes?.ApproximateNumberOfMessages ?? 0) >= 1;
+    }, 15000);
     const pending = await database.query('SELECT published_at, claimed_at FROM outbox_messages WHERE id = $1', [target.id]) as Array<{ published_at: Date | null; claimed_at: Date | null }>;
     expect(pending[0]?.published_at).toBeNull();
     const recovered = await startApp(40000 + (process.pid % 500), { workers: true, visibility: '1', batchSize: '1', outboxLeaseMs: '1000' });
@@ -304,11 +382,39 @@ describe('real SQS distribution, crash recovery, leases, retry and DLQ', () => {
       const published = await database.query('SELECT published_at, attempts FROM outbox_messages WHERE id = $1', [target.id]) as Array<{ published_at: Date | null; attempts: number }>;
       const events = await drainQueue(outputQueueUrl);
       const matching = events.filter((event) => event.eventId === target.id);
+      const financial = await database.query('SELECT (SELECT count(*)::int FROM wager_transactions WHERE wallet_id = $1) AS transactions, (SELECT count(*)::int FROM wallet_ledger_entries WHERE wallet_id = $1) AS ledger_entries, (SELECT balance_amount::text FROM wallets WHERE id = $1) AS balance', [wallet.id]) as Array<{ transactions: number; ledger_entries: number; balance: string }>;
       expect(published[0]?.published_at).not.toBeNull();
       expect(Number(published[0]?.attempts)).toBeGreaterThanOrEqual(2);
-      expect(matching.length).toBeGreaterThanOrEqual(1);
+      expect(matching).toHaveLength(1);
+      expect(Number(financial[0]?.transactions)).toBe(1);
+      expect(Number(financial[0]?.ledger_entries)).toBe(1);
+      expect(financial[0]?.balance).toBe('1.00');
     } finally {
       await stop(recovered);
+      await stop(http);
+    }
+  }, 90000);
+
+  test('two independent publishers claim one Outbox row without duplicate publication', async () => {
+    const httpPort = 42800 + (process.pid % 500);
+    const http = await startApp(httpPort, { workers: false });
+    const publishers: App[] = [];
+    try {
+      const wallet = await createWallet(httpPort, '1.00');
+      const eventRows = await database.query("SELECT id FROM outbox_messages WHERE payload -> 'data' ->> 'walletId' = $1 ORDER BY occurred_at ASC", [wallet.id]) as Array<{ id: string }>;
+      const target = eventRows[0];
+      if (!target) throw new Error('Outbox fixture was not created');
+      await database.query('UPDATE outbox_messages SET next_attempt_at = $1 WHERE published_at IS NULL AND id <> $2', ['2099-01-01T00:00:00.000Z', target.id]);
+      publishers.push(await startApp(42900 + (process.pid % 500), { workers: true, consumerName: `publisher-race-a-${id()}`, batchSize: '1', outboxLeaseMs: '5000' }));
+      publishers.push(await startApp(43000 + (process.pid % 500), { workers: true, consumerName: `publisher-race-b-${id()}`, batchSize: '1', outboxLeaseMs: '5000' }));
+      await waitFor(async () => Boolean((await database.query('SELECT published_at FROM outbox_messages WHERE id = $1 AND published_at IS NOT NULL', [target.id]))[0]), 15000);
+      const published = await database.query('SELECT published_at, attempts FROM outbox_messages WHERE id = $1', [target.id]) as Array<{ published_at: Date | null; attempts: number }>;
+      const events = await drainQueue(outputQueueUrl);
+      expect(published[0]?.published_at).not.toBeNull();
+      expect(Number(published[0]?.attempts)).toBe(1);
+      expect(events.filter((event) => event.eventId === target.id)).toHaveLength(1);
+    } finally {
+      for (const publisher of publishers) await stop(publisher);
       await stop(http);
     }
   }, 90000);

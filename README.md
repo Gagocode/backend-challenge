@@ -76,6 +76,7 @@ Variáveis do arquivo `.env.example`:
 | `SQS_ENDPOINT` | Endpoint SQS usado pela aplicação executada no host. |
 | `SQS_MAIN_QUEUE` | Fila FIFO de entrada. |
 | `SQS_DLQ` | Dead-letter queue da fila de entrada. |
+| `SQS_OUTPUT_QUEUE` | Fila FIFO de eventos publicados pela Outbox. |
 
 A aplicação também possui defaults para `PORT`, `SQS_OUTPUT_QUEUE`, parâmetros de polling, workers, leases, retry e tamanho dos lotes. Esses parâmetros opcionais estão centralizados na configuração da aplicação; o Compose define os endpoints internos necessários para a comunicação entre containers.
 
@@ -138,6 +139,8 @@ No Compose, as filas são:
 - `wager-transactions-dlq.fifo`: DLQ, com redrive após cinco recebimentos.
 - `wager-integration-events.fifo`: eventos publicados.
 
+A fila de eventos de integração não é consumida pelo consumer financeiro interno; consumidores externos ou uma camada posterior de fan-out são responsáveis por esse contrato.
+
 ## Testes e validação
 
 ```bash
@@ -145,12 +148,14 @@ bun run typecheck
 bun run build
 bun run test:unit
 bun run test:integration
+bun run test:sqs
 bun run test:migrations
 bun run test
 git diff --check
 ```
 
 Os testes de integração e E2E que dependem de infraestrutura devem ser executados com PostgreSQL e LocalStack disponíveis. Para desenvolvimento, também estão disponíveis `bun test:watch`, `bun run start` e `bun run start:dev`.
+Os cenários SQS usam LocalStack isolado por execução; eles não constituem validação contra AWS em produção.
 
 ## Health checks e métricas
 
@@ -185,6 +190,7 @@ docker/              inicialização local do LocalStack
 - O DLQ automático após o limite de recebimentos é responsabilidade do SQS e não é contado diretamente pelo processo.
 - A configuração padrão é voltada ao ambiente local; disponibilidade, credenciais e escalabilidade de produção exigem operação externa.
 - A imagem runtime não executa migrações automaticamente; elas devem ser aplicadas explicitamente.
+- No schema público existente deste workspace há 43 associações históricas `wager_transactions`/wallet incompatíveis com a FK composta de player; elas não foram alteradas e a migration correspondente não foi aplicada nesse schema.
 
 ## Testes isolados de integração
 
