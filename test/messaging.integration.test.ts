@@ -11,6 +11,10 @@ import type { FinancialTransactionContext } from '../src/application/ports/finan
 import { TypeOrmWagerTransactionRepository } from '../src/persistence/repositories/financial-repositories';
 import { WagerTransactionStatus } from '../src/domain/wager-transaction/wager-transaction';
 import { OutboxPublisher } from '../src/messaging/sqs/outbox.publisher';
+import { ProcessWagerTransactionUseCase } from '../src/application/use-cases/process-wager-transaction.use-case';
+import { PendingReferenceWorker } from '../src/messaging/pending-reference.worker';
+import { FailureCode } from '../src/domain/wager-transaction/wager-transaction';
+import { WagerTransactionConsumer } from '../src/messaging/sqs/wager-transaction.consumer';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error('DATABASE_URL is required for PostgreSQL integration tests; use bun run test:unit for infrastructure-free tests');
@@ -163,5 +167,176 @@ describe('Inbox and Outbox persistence against real PostgreSQL', () => {
       for (const row of blocked) await dataSource.query('UPDATE wager_transactions SET pending_next_attempt_at = $1 WHERE id = $2', [row.pending_next_attempt_at, row.id]);
       await dataSource.query('DELETE FROM wager_transactions WHERE id = $1', [firstId]);
     }
+  });
+
+  test('expires an unresolved reference atomically, emits one rejection event, and safely retries after rollback', async () => {
+    const wallet = await new CreateWalletUseCase(new TypeOrmFinancialUnitOfWork(dataSource)).execute({ id: randomUUID(), playerId: randomUUID(), initialBalance: Money.zero('BRL') });
+    const transactionId = randomUUID();
+    const externalTransactionId = `expiration-external-${transactionId}`;
+    const providerId = `expiration-provider-${transactionId}`;
+    const idempotencyKey = `expiration-key-${transactionId}`;
+    const processUseCase = new ProcessWagerTransactionUseCase(new TypeOrmFinancialUnitOfWork(dataSource));
+    const pending = await processUseCase.execute({
+      id: transactionId,
+      providerId,
+      externalTransactionId,
+      idempotencyKey,
+      payloadHash: 'c'.repeat(64),
+      walletId: wallet.id,
+      playerId: wallet.playerId,
+      roundId: `expiration-round-${transactionId}`,
+      gameId: 'expiration-test',
+      kind: 'REFUND' as never,
+      money: Money.from({ amount: '3.00', currency: 'BRL' }),
+      referenceExternalTransactionId: `missing-reference-${transactionId}`,
+      source: 'system',
+    });
+    expect(pending.transaction.status).toBe(WagerTransactionStatus.PendingReference);
+
+    await dataSource.query("UPDATE wager_transactions SET created_at = '2000-01-01T00:00:00.000Z', pending_next_attempt_at = NULL WHERE id = $1", [transactionId]);
+    const previousTtl = process.env.PENDING_REFERENCE_TTL_MS;
+    const previousInterval = process.env.PENDING_REFERENCE_INTERVAL_MS;
+    process.env.PENDING_REFERENCE_TTL_MS = '1';
+    process.env.PENDING_REFERENCE_INTERVAL_MS = '60000';
+
+    const delegate = new TypeOrmFinancialUnitOfWork(dataSource);
+    const failBeforeCommit = {
+      execute: <T>(work: (context: FinancialTransactionContext) => Promise<T>) => delegate.execute(async (context) => {
+        const result = await work(context);
+        if (result && typeof result === 'object' && 'transaction' in result && (result as { transaction: { status?: string } }).transaction.status === WagerTransactionStatus.Rejected) {
+          throw new Error('forced expiration rollback before commit');
+        }
+        return result;
+      }),
+    };
+    const failedWorker = new PendingReferenceWorker(dataSource, delegate, new ProcessWagerTransactionUseCase(failBeforeCommit));
+    try {
+      failedWorker.onModuleInit();
+      await failedWorker.processPending();
+      const afterRollback = await dataSource.query('SELECT status, failure_code FROM wager_transactions WHERE id = $1', [transactionId]) as Array<{ status: string; failure_code: string | null }>;
+      expect(afterRollback[0]).toEqual({ status: 'PENDING_REFERENCE', failure_code: null });
+      const rejectionEventsAfterRollback = await dataSource.query("SELECT id FROM outbox_messages WHERE event_type = 'WagerTransactionRejected' AND payload -> 'data' ->> 'transactionId' = $1", [transactionId]);
+      expect(rejectionEventsAfterRollback).toHaveLength(0);
+      const walletAfterRollback = await dataSource.query('SELECT balance_amount::text AS balance FROM wallets WHERE id = $1', [wallet.id]) as Array<{ balance: string }>;
+      const ledgerAfterRollback = await dataSource.query('SELECT count(*)::int AS count FROM wallet_ledger_entries WHERE wallet_id = $1', [wallet.id]) as Array<{ count: number }>;
+      expect(walletAfterRollback[0]?.balance).toBe('0.00');
+      expect(Number(ledgerAfterRollback[0]?.count)).toBe(0);
+
+      await dataSource.query('UPDATE wager_transactions SET pending_next_attempt_at = $1 WHERE id = $2', [new Date(Date.now() - 1), transactionId]);
+      const worker = new PendingReferenceWorker(dataSource, delegate, processUseCase);
+      worker.onModuleInit();
+      try {
+        await worker.processPending();
+        const rejected = await dataSource.query('SELECT status, failure_code FROM wager_transactions WHERE id = $1', [transactionId]) as Array<{ status: string; failure_code: string | null }>;
+        expect(rejected[0]).toEqual({ status: 'REJECTED', failure_code: FailureCode.ReferenceNotFound });
+        const rejectionEvents = await dataSource.query("SELECT id FROM outbox_messages WHERE event_type = 'WagerTransactionRejected' AND payload -> 'data' ->> 'transactionId' = $1", [transactionId]);
+        expect(rejectionEvents).toHaveLength(1);
+        const finalWallet = await dataSource.query('SELECT balance_amount::text AS balance FROM wallets WHERE id = $1', [wallet.id]) as Array<{ balance: string }>;
+        const finalLedger = await dataSource.query('SELECT count(*)::int AS count FROM wallet_ledger_entries WHERE wallet_id = $1', [wallet.id]) as Array<{ count: number }>;
+        expect(finalWallet[0]?.balance).toBe('0.00');
+        expect(Number(finalLedger[0]?.count)).toBe(0);
+
+        await worker.processPending();
+        const afterRepeat = await dataSource.query('SELECT status, failure_code FROM wager_transactions WHERE id = $1', [transactionId]) as Array<{ status: string; failure_code: string | null }>;
+        const rejectionEventsAfterRepeat = await dataSource.query("SELECT id FROM outbox_messages WHERE event_type = 'WagerTransactionRejected' AND payload -> 'data' ->> 'transactionId' = $1", [transactionId]);
+        expect(afterRepeat[0]).toEqual(rejected[0]);
+        expect(rejectionEventsAfterRepeat).toHaveLength(1);
+      } finally {
+        await worker.onModuleDestroy();
+      }
+    } finally {
+      await failedWorker.onModuleDestroy();
+      if (previousTtl === undefined) delete process.env.PENDING_REFERENCE_TTL_MS;
+      else process.env.PENDING_REFERENCE_TTL_MS = previousTtl;
+      if (previousInterval === undefined) delete process.env.PENDING_REFERENCE_INTERVAL_MS;
+      else process.env.PENDING_REFERENCE_INTERVAL_MS = previousInterval;
+    }
+  });
+
+  test('rolls back Inbox and financial writes after an Outbox insert fault and recovers on same-message redelivery', async () => {
+    const wallet = await new CreateWalletUseCase(new TypeOrmFinancialUnitOfWork(dataSource)).execute({ id: randomUUID(), playerId: randomUUID(), initialBalance: Money.from({ amount: '10.00', currency: 'BRL' }) });
+    const messageId = `precommit-message-${randomUUID()}`;
+    const consumerName = `precommit-consumer-${randomUUID()}`;
+    const providerId = `precommit-provider-${randomUUID()}`;
+    const externalTransactionId = `precommit-external-${randomUUID()}`;
+    const idempotencyKey = `${providerId}:${externalTransactionId}`;
+    const occurredAt = new Date().toISOString();
+    const initialOutboxRows = await dataSource.query("SELECT count(*)::int AS count FROM outbox_messages WHERE payload -> 'data' ->> 'walletId' = $1", [wallet.id]) as Array<{ count: number }>;
+    const body = JSON.stringify({
+      messageId,
+      type: 'WagerTransactionRequested',
+      occurredAt,
+      data: { providerId, externalTransactionId, idempotencyKey, playerId: wallet.playerId, walletId: wallet.id, roundId: `precommit-round-${randomUUID()}`, gameId: 'precommit-test', kind: 'BET', money: { amount: '3.00', currency: 'BRL' } },
+    });
+    const message = { Body: body, MessageId: `transport-${messageId}`, ReceiptHandle: `receipt-${messageId}`, Attributes: { ApproximateReceiveCount: '1' } };
+    const delegate = new TypeOrmFinancialUnitOfWork(dataSource);
+    let injectFailure = true;
+    let retryCalls = 0;
+    let deleteCalls = 0;
+    let ackSnapshot: { inbox: string | undefined; transactions: number; ledger: number; outbox: number } | undefined;
+    const failingUnitOfWork = {
+      execute: <T>(work: (context: FinancialTransactionContext) => Promise<T>) => delegate.execute((context) => work({
+        ...context,
+        outbox: {
+          claimDue: (...args) => context.outbox.claimDue(...args),
+          renewClaim: (...args) => context.outbox.renewClaim(...args),
+          markPublished: (...args) => context.outbox.markPublished(...args),
+          scheduleRetry: (...args) => context.outbox.scheduleRetry(...args),
+          enqueue: async (event) => {
+            const inserted = await context.outbox.enqueue(event);
+            if (injectFailure) {
+              injectFailure = false;
+              throw new Error('forced transient failure after real Outbox insert');
+            }
+            return inserted;
+          },
+        },
+      })),
+    };
+    const sqs = {
+      enabled: false,
+      consumerName,
+      visibilityTimeoutSeconds: 30,
+      retry: async () => { retryCalls += 1; },
+      delete: async () => {
+        deleteCalls += 1;
+        const inbox = await dataSource.query('SELECT status FROM inbox_messages WHERE consumer_name = $1 AND message_id = $2', [consumerName, messageId]) as Array<{ status: string }>;
+        const transactions = await dataSource.query('SELECT count(*)::int AS count FROM wager_transactions WHERE provider_id = $1 AND external_transaction_id = $2', [providerId, externalTransactionId]) as Array<{ count: number }>;
+        const ledger = await dataSource.query('SELECT count(*)::int AS count FROM wallet_ledger_entries WHERE transaction_id IN (SELECT id FROM wager_transactions WHERE provider_id = $1 AND external_transaction_id = $2)', [providerId, externalTransactionId]) as Array<{ count: number }>;
+        const outbox = await dataSource.query("SELECT count(*)::int AS count FROM outbox_messages WHERE payload -> 'data' ->> 'transactionId' IN (SELECT id::text FROM wager_transactions WHERE provider_id = $1 AND external_transaction_id = $2)", [providerId, externalTransactionId]) as Array<{ count: number }>;
+        ackSnapshot = { inbox: inbox[0]?.status, transactions: Number(transactions[0]?.count), ledger: Number(ledger[0]?.count), outbox: Number(outbox[0]?.count) };
+      },
+    };
+    const consumer = new WagerTransactionConsumer(sqs as never, failingUnitOfWork, new ProcessWagerTransactionUseCase(delegate));
+
+    await consumer.processMessage(message as never);
+    expect(retryCalls).toBe(1);
+    expect(deleteCalls).toBe(0);
+    const afterFailureInbox = await dataSource.query('SELECT status FROM inbox_messages WHERE consumer_name = $1 AND message_id = $2', [consumerName, messageId]) as Array<{ status: string }>;
+    const afterFailureTransaction = await dataSource.query('SELECT count(*)::int AS count FROM wager_transactions WHERE provider_id = $1 AND external_transaction_id = $2', [providerId, externalTransactionId]) as Array<{ count: number }>;
+    const afterFailureWallet = await dataSource.query('SELECT balance_amount::text AS balance FROM wallets WHERE id = $1', [wallet.id]) as Array<{ balance: string }>;
+    const afterFailureLedger = await dataSource.query('SELECT count(*)::int AS count FROM wallet_ledger_entries WHERE wallet_id = $1 AND transaction_id IN (SELECT id FROM wager_transactions WHERE provider_id = $2)', [wallet.id, providerId]) as Array<{ count: number }>;
+    const afterFailureOutbox = await dataSource.query("SELECT count(*)::int AS count FROM outbox_messages WHERE payload -> 'data' ->> 'walletId' = $1", [wallet.id]) as Array<{ count: number }>;
+    expect(afterFailureInbox).toHaveLength(0);
+    expect(Number(afterFailureTransaction[0]?.count)).toBe(0);
+    expect(afterFailureWallet[0]?.balance).toBe('10.00');
+    expect(Number(afterFailureLedger[0]?.count)).toBe(0);
+    expect(Number(afterFailureOutbox[0]?.count)).toBe(Number(initialOutboxRows[0]?.count));
+
+    await consumer.processMessage({ ...message, Attributes: { ApproximateReceiveCount: '2' } } as never);
+    expect(retryCalls).toBe(1);
+    expect(deleteCalls).toBe(1);
+    expect(ackSnapshot).toEqual({ inbox: 'PROCESSED', transactions: 1, ledger: 1, outbox: 2 });
+    const finalWallet = await dataSource.query('SELECT balance_amount::text AS balance FROM wallets WHERE id = $1', [wallet.id]) as Array<{ balance: string }>;
+    const finalInbox = await dataSource.query('SELECT status, attempts FROM inbox_messages WHERE consumer_name = $1 AND message_id = $2', [consumerName, messageId]) as Array<{ status: string; attempts: number }>;
+    const finalTransactions = await dataSource.query('SELECT count(*)::int AS count FROM wager_transactions WHERE provider_id = $1 AND external_transaction_id = $2', [providerId, externalTransactionId]) as Array<{ count: number }>;
+    const finalLedger = await dataSource.query('SELECT count(*)::int AS count FROM wallet_ledger_entries WHERE wallet_id = $1 AND transaction_id IN (SELECT id FROM wager_transactions WHERE provider_id = $2)', [wallet.id, providerId]) as Array<{ count: number }>;
+    const finalOutbox = await dataSource.query("SELECT event_type FROM outbox_messages WHERE payload -> 'data' ->> 'transactionId' IN (SELECT id::text FROM wager_transactions WHERE provider_id = $1)", [providerId]) as Array<{ event_type: string }>;
+    expect(finalInbox[0]?.status).toBe('PROCESSED');
+    expect(Number(finalInbox[0]?.attempts)).toBe(1);
+    expect(Number(finalTransactions[0]?.count)).toBe(1);
+    expect(finalWallet[0]?.balance).toBe('7.00');
+    expect(Number(finalLedger[0]?.count)).toBe(1);
+    expect(finalOutbox.map((row) => row.event_type).sort()).toEqual(['WagerTransactionProcessed', 'WalletBalanceChanged']);
   });
 });
