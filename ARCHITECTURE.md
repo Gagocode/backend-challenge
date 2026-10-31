@@ -4,6 +4,8 @@ Este documento descreve o estado implementado nesta entrega. O desafio original 
 
 ## Visão geral
 
+A camada HTTP publica a especificação OpenAPI e a interface Swagger em `/api/docs` e `/api/docs-json`, respectivamente, para descrever os contratos HTTP existentes sem alterar os fluxos de domínio.
+
 O sistema recebe transações de wagering por HTTP ou SQS, aplica regras financeiras sobre uma carteira PostgreSQL e produz eventos de integração de forma assíncrona. A consistência financeira, a idempotência e a persistência da intenção de evento são tratadas na transação relacional. O envio efetivo à SQS ocorre depois do commit, pelo publisher da Outbox; envio e commit não são uma operação atômica única.
 
 ```text
