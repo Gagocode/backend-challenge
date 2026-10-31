@@ -10,6 +10,11 @@ export function createDatabaseOptions(
     throw new Error('DATABASE_URL is required to configure PostgreSQL');
   }
 
+  const schema = environment.TEST_DATABASE_SCHEMA;
+  if (schema !== undefined && !/^[a-z][a-z0-9_]{0,62}$/u.test(schema)) {
+    throw new Error('TEST_DATABASE_SCHEMA must be a safe PostgreSQL schema identifier');
+  }
+
   return {
     type: 'postgres',
     url,
@@ -18,5 +23,6 @@ export function createDatabaseOptions(
     migrationsTableName: 'typeorm_migrations',
     entities: [join(__dirname, '../persistence/typeorm/entities/*{.js,.ts}')],
     migrations: [join(__dirname, 'migrations/*{.js,.ts}')],
+    ...(schema ? { extra: { options: `-c search_path=${schema},public` } } : {}),
   };
 }

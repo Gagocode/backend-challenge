@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { Message } from '@aws-sdk/client-sqs';
 import { InboxMessage } from '../src/domain/messaging/inbox-message';
 import { hashWagerTransactionPayload } from '../src/application/messaging/payload-hash';
-import { WagerTransactionConsumer } from '../src/messaging/sqs/wager-transaction.consumer';
+import { InvalidSqsMessageError, parseWagerTransactionMessage, WagerTransactionConsumer } from '../src/messaging/sqs/wager-transaction.consumer';
 import type { SqsClientService } from '../src/messaging/sqs/sqs-client';
 
 const sqsStub = (overrides: Record<string, unknown> = {}): SqsClientService => ({
@@ -33,6 +33,35 @@ const uowStub = () => ({
 const message = (body: unknown): Message => ({ Body: JSON.stringify(body), MessageId: 'sqs-id', ReceiptHandle: 'receipt' });
 
 describe('messaging regressions', () => {
+  const validBody = () => ({
+    messageId: 'message-1',
+    type: 'WagerTransactionRequested',
+    occurredAt: new Date().toISOString(),
+    data: {
+      providerId: 'provider-a',
+      externalTransactionId: 'external-1',
+      idempotencyKey: 'provider-a:external-1',
+      playerId: '0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1',
+      walletId: '0192f291-27dd-7d3f-8071-5f8685deef37',
+      roundId: 'round-1',
+      gameId: 'game-1',
+      kind: 'BET',
+      money: { amount: '10.00', currency: 'BRL' },
+    },
+  });
+
+  test('rejects unexpected envelope and data properties', () => {
+    const envelope = { ...validBody(), unexpected: true };
+    expect(() => parseWagerTransactionMessage(JSON.stringify(envelope))).toThrow(InvalidSqsMessageError);
+    const data = { ...validBody(), data: { ...validBody().data, unexpected: true } };
+    expect(() => parseWagerTransactionMessage(JSON.stringify(data))).toThrow(InvalidSqsMessageError);
+  });
+
+  test('rejects invalid player and wallet UUIDs before financial processing', () => {
+    const body = { ...validBody(), data: { ...validBody().data, playerId: 'player-1' } };
+    expect(() => parseWagerTransactionMessage(JSON.stringify(body))).toThrow(InvalidSqsMessageError);
+  });
+
   test('transport message id does not change the financial payload hash', () => {
     const data = { providerId: 'provider-a', externalTransactionId: 'external-1', idempotencyKey: 'provider-a:external-1', playerId: 'player-1', walletId: 'wallet-1', roundId: 'round-1', gameId: 'game-1', kind: 'BET', money: { amount: '10.00', currency: 'BRL' } };
     expect(hashWagerTransactionPayload(data)).toBe(hashWagerTransactionPayload({ ...data, messageId: 'another-message', occurredAt: new Date().toISOString() }));

@@ -176,6 +176,14 @@ Cada item deverá registrar contexto/problema, alternativas, decisão, justifica
 - **Decisão:** HTTP e SQS usam a mesma canonização dos campos financeiros; `messageId`, timestamp de transporte e outros metadados não participam do hash. A Inbox continua identificada por `(consumer_name,message_id)`. Outbox e `PENDING_REFERENCE` usam tokens e leases persistidos no PostgreSQL, com renovação periódica e backoff persistido.
 - **Justificativa:** preserva replay idempotente entre redeliveries/envelopes distintos sem relaxar conflito de payload, e permite exclusividade/recuperação entre múltiplas instâncias.
 - **Consequências:** publicação continua at-least-once; falha depois do envio e antes do commit de `published_at` pode produzir duplicata, que consumidores devem tratar de forma idempotente.
+## ADR-017 - Hardening de isolamento e invariantes persistentes
+
+- **Status:** aprovada - 2026-10-31.
+- **Contexto:** a auditoria identificou que testes de integração podiam ser ignorados, publishers externos podiam disputar a Outbox e o schema não impedia todas as associações cruzadas entre wallet, player, transação e ledger.
+- **Decisão:** separar `test:unit`, `test:integration`, `test:sqs` e `test:migrations`; o runner de integração cria schema PostgreSQL e filas FIFO exclusivas por execução, aplica migrations e remove somente os recursos próprios. A migration `StrengthenFinancialAssociations1710000004000` adiciona FKs compostas e unicidades para novas associações financeiras. FKs são `NOT VALID` na instalação sobre bancos legados para preservar dados existentes; novas inserções e atualizações continuam protegidas.
+- **Observabilidade:** o outbox lag é zerado quando não há claims pendentes; a métrica de DLQ continua limitada a envios explícitos, sem inventar observação do redrive automático.
+- **Trade-offs:** bancos legados podem conter associações inconsistentes históricas e exigem saneamento antes de `VALIDATE CONSTRAINT`; a suíte completa requer infraestrutura real, enquanto a suíte unitária permanece independente.
+
 ## ADR-016 - Observabilidade operacional sem infraestrutura adicional
 
 - **Status:** aprovada - 2026-10-31.

@@ -143,7 +143,10 @@ No Compose, as filas são:
 ```bash
 bun run typecheck
 bun run build
-bun test
+bun run test:unit
+bun run test:integration
+bun run test:migrations
+bun run test
 git diff --check
 ```
 
@@ -182,6 +185,10 @@ docker/              inicialização local do LocalStack
 - O DLQ automático após o limite de recebimentos é responsabilidade do SQS e não é contado diretamente pelo processo.
 - A configuração padrão é voltada ao ambiente local; disponibilidade, credenciais e escalabilidade de produção exigem operação externa.
 - A imagem runtime não executa migrações automaticamente; elas devem ser aplicadas explicitamente.
+
+## Testes isolados de integração
+
+`bun run test:unit` executa somente testes sem infraestrutura externa. `bun run test:integration` exige `DATABASE_URL` e LocalStack acessível, cria um schema PostgreSQL e três filas FIFO exclusivas para a execução, aplica as migrations e remove somente esses recursos ao final. `bun run test:sqs` executa apenas a regressão SQS com o mesmo isolamento. `bun run test:migrations` valida apply, revert e reapply em schema isolado. A integração falha explicitamente quando as dependências ou o isolamento não estão disponíveis; nenhum teste financeiro é ignorado silenciosamente.
 
 ## Documentação complementar
 

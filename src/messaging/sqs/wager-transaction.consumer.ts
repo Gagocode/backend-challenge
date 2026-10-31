@@ -36,15 +36,28 @@ export class InvalidSqsMessageError extends Error {
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+const isNonEmptyString = (value: unknown, maxLength = 255): value is string => typeof value === 'string' && value.trim().length > 0 && value.length <= maxLength;
+const isUuid = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
+const exactProperties = (value: Record<string, unknown>, allowed: readonly string[], label: string): void => {
+  if (Object.keys(value).some((key) => !allowed.includes(key))) throw new InvalidSqsMessageError(`${label} contains unexpected properties`);
+};
 
-const parseMessage = (body: string): WagerTransactionMessage => {
+export const parseWagerTransactionMessage = (body: string): WagerTransactionMessage => {
   let candidate: unknown;
   try { candidate = JSON.parse(body) as unknown; } catch { throw new InvalidSqsMessageError('Message body is not valid JSON'); }
-  if (!isRecord(candidate) || !isNonEmptyString(candidate.messageId) || candidate.type !== 'WagerTransactionRequested' || !isNonEmptyString(candidate.occurredAt) || Number.isNaN(Date.parse(candidate.occurredAt))) throw new InvalidSqsMessageError('Message envelope is invalid');
+  if (!isRecord(candidate)) throw new InvalidSqsMessageError('Message envelope is invalid');
+  exactProperties(candidate, ['messageId', 'type', 'occurredAt', 'correlationId', 'data'], 'Message envelope');
+  if (!isNonEmptyString(candidate.messageId) || candidate.type !== 'WagerTransactionRequested' || !isNonEmptyString(candidate.occurredAt) || Number.isNaN(Date.parse(candidate.occurredAt))) throw new InvalidSqsMessageError('Message envelope is invalid');
+  if (candidate.correlationId !== undefined && !isNonEmptyString(candidate.correlationId, 128)) throw new InvalidSqsMessageError('Message correlationId is invalid');
   const data = candidate.data;
-  if (!isRecord(data) || !['providerId', 'externalTransactionId', 'idempotencyKey', 'playerId', 'walletId', 'roundId', 'gameId'].every((key) => isNonEmptyString(data[key])) || !isNonEmptyString(data.kind) || !(Object.values(WagerTransactionKind).filter((kind) => kind !== WagerTransactionKind.Opening) as WagerTransactionKind[]).includes(data.kind as WagerTransactionKind)) throw new InvalidSqsMessageError('Message data is invalid');
-  if (!isRecord(data.money) || !isNonEmptyString(data.money.amount) || !isNonEmptyString(data.money.currency)) throw new InvalidSqsMessageError('Message money is invalid');
+  if (!isRecord(data)) throw new InvalidSqsMessageError('Message data is invalid');
+  exactProperties(data, ['providerId', 'externalTransactionId', 'idempotencyKey', 'playerId', 'walletId', 'roundId', 'gameId', 'kind', 'money', 'referenceExternalTransactionId'], 'Message data');
+  if (!isNonEmptyString(data.providerId, 128) || !isNonEmptyString(data.externalTransactionId) || !isNonEmptyString(data.idempotencyKey) || !isNonEmptyString(data.roundId) || !isNonEmptyString(data.gameId) || !isUuid(data.playerId) || !isUuid(data.walletId)) throw new InvalidSqsMessageError('Message data is invalid');
+  if (!isNonEmptyString(data.kind, 16) || !(Object.values(WagerTransactionKind).filter((kind) => kind !== WagerTransactionKind.Opening) as WagerTransactionKind[]).includes(data.kind as WagerTransactionKind)) throw new InvalidSqsMessageError('Message kind is invalid');
+  if (data.referenceExternalTransactionId !== undefined && !isNonEmptyString(data.referenceExternalTransactionId)) throw new InvalidSqsMessageError('Message reference is invalid');
+  if (!isRecord(data.money)) throw new InvalidSqsMessageError('Message money is invalid');
+  exactProperties(data.money, ['amount', 'currency'], 'Message money');
+  if (!isNonEmptyString(data.money.amount) || !isNonEmptyString(data.money.currency, 3)) throw new InvalidSqsMessageError('Message money is invalid');
   try { Money.from({ amount: data.money.amount, currency: data.money.currency }); } catch (error: unknown) { throw new InvalidSqsMessageError(error instanceof Error ? error.message : 'Message money is invalid'); }
   return candidate as unknown as WagerTransactionMessage;
 };
@@ -100,7 +113,7 @@ export class WagerTransactionConsumer implements OnModuleInit, OnModuleDestroy {
     if (receiveCount > 1) this.logger.warn('sqs_message_redelivered', { messageId, consumerName: this.sqs.consumerName, attempt: receiveCount, component: 'consumer' });
     let parsed: WagerTransactionMessage;
     try {
-      parsed = parseMessage(body);
+      parsed = parseWagerTransactionMessage(body);
     } catch (error: unknown) {
       await this.recordTerminalMessage(messageId, body, error instanceof Error ? error.message : 'Invalid message');
       await this.sqs.sendToDlq(body, messageId);
