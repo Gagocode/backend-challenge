@@ -47,6 +47,7 @@ services:
     restart: unless-stopped
     environment:
       NODE_ENV: production
+      API_DOCS_ENABLED: ${API_DOCS_ENABLED:-false}
       PORT: 3000
       DATABASE_URL: postgresql://${POSTGRES_USER:-wager}:${POSTGRES_PASSWORD:-change-me-local-only}@postgres:5432/${POSTGRES_DB:-wager}
       AWS_REGION: ${AWS_REGION:-us-east-1}
