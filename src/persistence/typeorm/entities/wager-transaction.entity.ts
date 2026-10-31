@@ -24,4 +24,9 @@ export class WagerTransactionEntity {
   @Column({ name: 'failure_code', type: 'varchar', length: 64, nullable: true }) failureCode!: string | null;
   @Column({ name: 'created_at', type: 'timestamptz' }) createdAt!: Date;
   @Column({ name: 'processed_at', type: 'timestamptz', nullable: true }) processedAt!: Date | null;
+  @Column({ name: 'pending_attempts', type: 'integer', default: 0 }) pendingAttempts!: number;
+  @Column({ name: 'pending_next_attempt_at', type: 'timestamptz', nullable: true }) pendingNextAttemptAt!: Date | null;
+  @Column({ name: 'pending_claimed_at', type: 'timestamptz', nullable: true }) pendingClaimedAt!: Date | null;
+  @Column({ name: 'pending_claim_token', type: 'uuid', nullable: true }) pendingClaimToken!: string | null;
+  @Column({ name: 'pending_last_error', type: 'varchar', length: 2000, nullable: true }) pendingLastError!: string | null;
 }

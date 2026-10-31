@@ -28,8 +28,8 @@ const submit = async (wallet: Record<string, unknown>, overrides: Record<string,
 beforeAll(async () => {
   database = new DataSource(createDatabaseOptions({ ...process.env, DATABASE_URL: databaseUrl }));
   await database.initialize();
-  application = Bun.spawn([process.execPath, 'src/main.ts'], { env: { ...process.env, DATABASE_URL: databaseUrl, PORT: String(port), NODE_ENV: 'test' }, stdout: 'pipe', stderr: 'pipe' });
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  application = Bun.spawn([process.execPath, 'src/main.ts'], { env: { ...process.env, DATABASE_URL: databaseUrl, PORT: String(port), NODE_ENV: 'test', SQS_ENDPOINT: 'http://127.0.0.1:4566', SQS_OUTPUT_QUEUE: 'wager-integration-events.fifo', MESSAGING_WORKERS_ENABLED: 'false' }, stdout: 'pipe', stderr: 'pipe' });
+  for (let attempt = 0; attempt < 300; attempt += 1) {
     try { const health = await fetch(`${baseUrl}/health/live`); if (health.ok) return; } catch { /* application is still starting */ }
     await Bun.sleep(100);
   }
