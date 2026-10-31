@@ -16,6 +16,7 @@ const integrationTests = [
   'test/http.e2e.test.ts',
   'test/messaging.integration.test.ts',
   'test/sqs.regression.integration.test.ts',
+  'test/distributed-recovery.integration.test.ts',
 ];
 
 const databaseUrl = process.env.DATABASE_URL;

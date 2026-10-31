@@ -9,6 +9,7 @@ import { StructuredLogger } from '../../observability/structured-logger';
 export class OutboxPublisher implements OnModuleInit, OnModuleDestroy {
   private running = false;
   private polling?: Promise<void>;
+  private crashFaultInjected = false;
 
   public constructor(private readonly dataSource: DataSource, private readonly sqs: SqsClientService, private readonly logger = new StructuredLogger(), private readonly metrics = new MetricsService()) {}
 
@@ -48,6 +49,7 @@ export class OutboxPublisher implements OnModuleInit, OnModuleDestroy {
       }, Math.max(250, Math.floor(leaseMs / 3)));
       try {
         await this.sqs.send(JSON.stringify(message.payload), message.aggregateId, message.id);
+        if (this.shouldCrashAfterSend()) process.exit(43);
         const acknowledged = !leaseLost && await this.dataSource.transaction(async (manager) => new TypeOrmOutboxRepository(manager).markPublished(message.id, token, new Date()));
         if (acknowledged) published += 1;
       } catch (error: unknown) {
@@ -61,6 +63,12 @@ export class OutboxPublisher implements OnModuleInit, OnModuleDestroy {
     }
     if (claimed.length > 0 && published === claimed.length) this.metrics.outboxLag(0);
     return published;
+  }
+
+  private shouldCrashAfterSend(): boolean {
+    if (process.env.NODE_ENV !== 'test' || process.env.OUTBOX_FAULT_INJECTION !== 'crash-after-send-before-mark-published' || this.crashFaultInjected) return false;
+    this.crashFaultInjected = true;
+    return true;
   }
 
   private async poll(): Promise<void> {
